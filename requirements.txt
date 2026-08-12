@@ -1,8 +1,9 @@
-streamlit
-lightgbm
+﻿streamlit
 pandas
 numpy
-google-genai
 beautifulsoup4
 requests
+google-genai
 joblib
+scikit-learn
+lightgbm
