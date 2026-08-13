@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import subprocess
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -13,24 +14,18 @@ NAR_PLACES = {
 }
 
 def clean_text(text):
-    """余分な改行やスペースを完全に除去"""
     if not text:
         return ""
     return re.sub(r'[\s\u3000]+', '', str(text)).strip()
 
 def smart_decode(content):
-    """netkeibaのUTF-8化と旧EUC-JPの両方に自動対応して文字化けを完全防止"""
     try:
-        # まずは現代の主流であるUTF-8でデコード
         return content.decode('utf-8')
     except UnicodeDecodeError:
-        # 失敗した場合は従来のEUC-JPでデコード
         return content.decode('euc-jp', errors='replace')
 
 def scrape_race_card(race_id, date_str, is_test=False):
-    """レースIDから出馬表を取得"""
     url = f"https://nar.netkeiba.com/race/shutuba.html?race_id={race_id}"
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -39,8 +34,6 @@ def scrape_race_card(race_id, date_str, is_test=False):
     
     try:
         res = requests.get(url, headers=headers, timeout=10)
-        
-        # 🚨ここが文字化け防止の要
         html = smart_decode(res.content)
         soup = BeautifulSoup(html, "html.parser")
         
@@ -68,32 +61,26 @@ def scrape_race_card(race_id, date_str, is_test=False):
                 distance = dist_match.group(1)
         
         rows = []
-        # ヘッダー行を飛ばしてデータ行だけを抽出
         for tr in table.find_all("tr"):
             tds = tr.find_all("td")
             if len(tds) < 10:
                 continue
                 
             try:
-                # 1. 馬番（2番目の列: index 1）
                 umaban = clean_text(tds[1].text)
                 if not umaban.isdigit(): continue
                 
-                # 2. 馬名（4番目の列: index 3）
                 horse_name = clean_text(tds[3].text)
                 if not horse_name: continue
                 
-                # 3. 斤量（6番目の列: index 5）
                 weight = 54.0
                 w_str = clean_text(tds[5].text)
                 w_match = re.search(r'([0-9\.]+)', w_str)
                 if w_match:
                     weight = float(w_match.group(1))
                         
-                # 4. 騎手名（7番目の列: index 6）
                 jockey_name = clean_text(tds[6].text)
                 
-                # 5. 単勝オッズ（10番目の列: index 9）
                 odds = 15.0
                 odds_str = clean_text(tds[9].text)
                 if "---" not in odds_str and odds_str != "":
@@ -101,7 +88,6 @@ def scrape_race_card(race_id, date_str, is_test=False):
                     if odds_match:
                         odds = float(odds_match.group(1))
                     
-                # 6. 人気（11番目の列: index 10）
                 pop = 99
                 pop_str = clean_text(tds[10].text)
                 pop_match = re.search(r'([0-9]+)', pop_str)
@@ -128,6 +114,18 @@ def scrape_race_card(race_id, date_str, is_test=False):
         if is_test:
             print(f"  [エラー] {e}")
         return None
+
+def auto_git_push(date_formatted):
+    """取得したCSVデータをGitに自動コミット＆プッシュ"""
+    print("\n🚀 GitHubへの自動送信を開始します...")
+    try:
+        subprocess.run(["git", "add", "future_races_chiho.csv"], check=True)
+        commit_msg = f"update: {date_formatted} 出馬表データ更新"
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+        subprocess.run(["git", "push", "origin", "main"], check=True)
+        print("✨ GitHubへの自動送信が完了しました！アプリ側も1〜2分で最新化されます。")
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ Git自動送信でエラーが発生したか、変更がありませんでした: {e}")
 
 def collect_todays_races():
     JST = timezone(timedelta(hours=+9), 'JST')
@@ -177,7 +175,10 @@ def collect_todays_races():
     if all_dfs:
         final_df = pd.concat(all_dfs, ignore_index=True)
         final_df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
-        print(f"\n✨ 取得完了！ 'future_races_chiho.csv' を保存しました。")
+        print(f"\n✨ CSV保存完了！ ('future_races_chiho.csv')")
+        
+        # 🚨 ここでGitHubへ自動送信！
+        auto_git_push(date_formatted)
     else:
         print("取得できる出馬表データがありませんでした。")
 

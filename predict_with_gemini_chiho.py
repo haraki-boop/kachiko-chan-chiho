@@ -19,39 +19,49 @@ st.set_page_config(page_title="AI予想 勝ち子ちゃん | 地方版", page_ic
 
 st.markdown("""
 <style>
-    .stApp { background-color: #fcf9f9; font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', Arial, sans-serif; }
-    
+    .stApp {
+        background-color: #fcf9f9 !important;
+        color: #333333 !important;
+        font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', Arial, sans-serif;
+    }
+    p, span, label, div, li, td, th { color: #333333; }
     h1 { font-size: 1.9rem !important; color: #c94a65 !important; font-weight: 800; }
     h2 { font-size: 1.4rem !important; color: #5a3d46 !important; }
+    h3 { font-size: 1.2rem !important; color: #c94a65 !important; }
     
     .section-header {
-        font-size: 1.25rem; font-weight: 800; color: #c94a65;
+        font-size: 1.25rem; font-weight: 800; color: #c94a65 !important;
         margin-top: 1.5rem; margin-bottom: 1rem;
         border-bottom: 2px solid #f2cdd5; padding-bottom: 6px;
     }
     
     .table-container {
         width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
-        margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+        margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+        background-color: #ffffff;
     }
     
-    .kachi-table {
-        width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #ffffff; white-space: nowrap;
-    }
-    .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff; font-weight: bold; }
-    .kachi-table th { padding: 10px 12px; text-align: center; border-right: 1px solid rgba(255,255,255,0.2); }
+    .kachi-table { width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #ffffff; white-space: nowrap; }
+    .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff !important; font-weight: bold; }
+    .kachi-table th { padding: 10px 12px; text-align: center; border-right: 1px solid rgba(255,255,255,0.2); color: #ffffff !important; }
     .kachi-table th:last-child { border-right: none; }
-    .kachi-table td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f2eced; color: #5a3d46; font-weight: 500; }
+    .kachi-table td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f2eced; color: #5a3d46 !important; font-weight: 500; }
     .kachi-table tbody tr:hover td { background: #fff5f7; }
     
-    .badge-mark { color: #fff; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85em; display: inline-block; min-width: 55px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .badge-mark { color: #fff !important; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85em; display: inline-block; min-width: 55px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
     .badge-honmei { background: linear-gradient(135deg, #ff4757, #ff6b81); }
     .badge-taikou { background: linear-gradient(135deg, #3742fa, #5352ed); }
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
-    .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #333; }
-    .badge-keshi  { background: #e0e0e0; color: #7f8c8d; box-shadow: none; }
-    
-    .badge-idx { background-color: #fff0f3; color: #c94a65; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.85em; border: 1px solid #f2cdd5; }
+    .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
+    .badge-keshi  { background: #e0e0e0; color: #666666 !important; box-shadow: none; }
+    .badge-idx { background-color: #fff0f3; color: #c94a65 !important; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.85em; border: 1px solid #f2cdd5; }
+
+    .gemini-output-box {
+        background-color: #ffffff !important; color: #222222 !important; padding: 20px;
+        border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); border: 2px solid #f2cdd5; margin-top: 15px;
+    }
+    .gemini-output-box * { color: #222222 !important; }
+    .gemini-output-box h3 { color: #c94a65 !important; }
 
     @media (max-width: 768px) {
         .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -59,7 +69,7 @@ st.markdown("""
         .kachi-table th, .kachi-table td { padding: 5px 6px; }
         h1 { font-size: 1.4rem !important; } 
         h2 { font-size: 1.1rem !important; }
-        .stButton button p { font-size: 0.7rem !important; white-space: nowrap !important; }
+        .stButton button p { font-size: 0.75rem !important; white-space: nowrap !important; color: inherit !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -72,6 +82,8 @@ with col2:
 
 if 'selected_race_id' not in st.session_state:
     st.session_state['selected_race_id'] = None
+if 'baba_status' not in st.session_state:
+    st.session_state['baba_status'] = "良"
 
 # ==========================================
 # 🔑 2. 定数と環境設定・読み込み
@@ -164,7 +176,6 @@ def build_past_dicts(df_p):
 jockey_dict, horse_dict = build_past_dicts(df_past)
 
 def get_kyakushitsu(fc):
-    """1コーナーの通過順位から脚質を判定"""
     if pd.isna(fc) or fc == 0: return "-"
     if fc <= 2.0: return "逃"
     elif fc <= 4.5: return "先"
@@ -172,9 +183,9 @@ def get_kyakushitsu(fc):
     else: return "追"
 
 # ==========================================
-# 3. AIスコア ＆ 穴馬・高期待値ロジック算出
+# 3. AIスコア ＆ 穴馬・高期待値・【馬場補正】ロジック算出
 # ==========================================
-def calculate_race_scores(race_id_target, target_df):
+def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     if target_df.empty: return None
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy()
     if race_df.empty: return None
@@ -185,7 +196,11 @@ def calculate_race_scores(race_id_target, target_df):
     race_df['単勝_num'] = pd.to_numeric(race_df.get('単勝'), errors='coerce').fillna(15.0)
     race_df['人気_num'] = pd.to_numeric(race_df.get('人気'), errors='coerce').fillna(99.0)
     race_df['distance_num'] = pd.to_numeric(race_df.get('distance'), errors='coerce').fillna(1400)
+    
     race_df['weight_num'] = pd.to_numeric(race_df.get('斤量'), errors='coerce').fillna(54.0)
+    broken_weight_mask = (race_df['weight_num'] == race_df['単勝_num']) | (race_df['weight_num'] < 48.0) | (race_df['weight_num'] > 63.0)
+    race_df.loc[broken_weight_mask, 'weight_num'] = 54.0
+
     race_df['gate_num'] = pd.to_numeric(race_df.get('馬番'), errors='coerce').fillna(8.0)
     race_df['馬番_num'] = pd.to_numeric(race_df.get('馬番'), errors='coerce').fillna(0)
     race_df['馬名_clean'] = race_df['馬名'].astype(str).apply(clean_horse_name)
@@ -195,24 +210,32 @@ def calculate_race_scores(race_id_target, target_df):
     
     race_df['prev_dist'] = race_df['馬名_clean'].apply(lambda x: get_h(x, 'prev_dist', 1400))
     race_df['dist_change'] = race_df['distance_num'] - race_df['prev_dist']
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: get_h(x, 'prev_1c', 6))
+    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: get_h(x, 'prev_1c', 6.0))
     race_df['recent_avg_rank'] = race_df['馬名_clean'].apply(lambda x: get_h(x, 'recent_avg_rank', 6.0))
     race_df['horse_weight'] = race_df['馬名_clean'].apply(lambda x: get_h(x, 'prev_weight', 470))
-    
     race_df['jockey_win_rate'] = race_df['騎手'].apply(lambda x: get_j(x, 'j_win_rate', 0.08))
-
-    # 脚質の付与
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
-    # ⏱️ タイム指数（30〜99点の範囲内にガード）
-    raw_time = 75.0 - (race_df['recent_avg_rank'].clip(lower=1.0, upper=14.0) - 3.0) * 3.0 + (race_df['weight_num'] - 54.0) * 1.5
-    race_df['custom_time_index'] = raw_time.clip(30.0, 99.0).round(1)
+    odds_bonus = (15.0 - race_df['単勝_num'].clip(upper=30.0)) * 0.4
+    raw_time = 75.0 - (race_df['recent_avg_rank'].clip(lower=1.0, upper=14.0) - 3.0) * 3.0 + (race_df['weight_num'] - 54.0) * 1.5 + odds_bonus
+    
+    raw_start = (12.0 - race_df['first_corner'].clip(upper=10.0)) * 6.5 + (15.0 - race_df['単勝_num'].clip(upper=20.0)) * 0.3
 
-    # 🚀 スタート指数（30〜99点の範囲内にガード）
-    raw_start = (12.0 - race_df['first_corner'].clip(upper=10.0)) * 6.5 + race_df['gate_num'] * 0.5
-    race_df['custom_start_index'] = raw_start.clip(30.0, 99.0).round(1)
+    # 🌧️【馬場状態による指数補正】
+    if baba_status in ["重", "不良"]:
+        # 重・不良は前残りが激増するため、逃げ・先行馬の指数を大きく底上げ
+        is_front = race_df['脚質'].isin(["逃", "先"])
+        raw_start = np.where(is_front, raw_start + 6.0, raw_start - 2.0)
+        raw_time = np.where(is_front, raw_time + 4.0, raw_time - 1.0)
+    elif baba_status == "良":
+        # タフな良馬場は差し馬の台頭が増えるため、差し・追込馬にボーナス
+        is_closer = race_df['脚質'].isin(["差", "追"])
+        raw_time = np.where(is_closer, raw_time + 2.0, raw_time - 1.0)
 
-    # 🌟 勝率の算出
+    race_df['custom_time_index'] = pd.Series(raw_time).clip(30.0, 99.0).round(1)
+    race_df['custom_start_index'] = pd.Series(raw_start).clip(30.0, 99.0).round(1)
+
+    # 勝率の算出
     inv_odds = 1.0 / race_df['単勝_num'].clip(lower=1.0)
     base_prob = np.power(inv_odds, 1.2)
     
@@ -232,33 +255,14 @@ def calculate_race_scores(race_id_target, target_df):
     race_df['win_prob'] = base_prob + ana_bonus
     race_df['win_prob'] = race_df['win_prob'] / race_df['win_prob'].sum()
 
-    # 期待値（EV）
     race_df['ev_brain2'] = (race_df['win_prob'] * race_df['単勝_num']).round(2)
 
-    # AIスコア
     max_p = race_df['win_prob'].max()
     ev_score = (race_df['ev_brain2'].clip(0, 3.0) / 3.0) * 20.0
     prob_score = (race_df['win_prob'] / max_p) * 75.0
     race_df['score_brain1'] = (prob_score + ev_score).clip(10, 98).round().astype(int)
 
     return race_df.sort_values(by=['score_brain1', 'win_prob'], ascending=[False, False]).reset_index(drop=True)
-
-def get_all_markers():
-    markers = {}
-    if df_future.empty: return markers
-    for rid in df_future['race_id'].unique():
-        sdf = calculate_race_scores(rid, df_future)
-        if sdf is not None and not sdf.empty:
-            top_contenders = len(sdf[sdf['score_brain1'] >= 80])
-            if top_contenders == 3:
-                markers[rid] = "🔥激熱"
-            elif top_contenders == 2:
-                markers[rid] = "💥熱"
-            else:
-                markers[rid] = ""
-    return markers
-
-markers = get_all_markers()
 
 # ==========================================
 # 4. サイドバー UI & テーブル生成
@@ -291,27 +295,27 @@ def generate_beautiful_table(disp_df):
         elif "▲" in mark: b_cls = "badge-tana"
         elif "△" in mark: b_cls = "badge-renka"
         
-        ev_style = "color:#e74c3c; font-weight:900;" if ev_val >= 1.0 else "color:#5a3d46;"
+        ev_style = "color:#e74c3c !important; font-weight:900;" if ev_val >= 1.0 else "color:#5a3d46 !important;"
         
         kyaku = r.get('脚質', '-')
-        k_style = "background:#bdc3c7; color:#fff;"
-        if kyaku == "逃": k_style = "background:#ff7675; color:#fff;"
-        elif kyaku == "先": k_style = "background:#e67e22; color:#fff;"
-        elif kyaku == "差": k_style = "background:#3498db; color:#fff;"
-        elif kyaku == "追": k_style = "background:#2ecc71; color:#fff;"
+        k_style = "background:#bdc3c7; color:#fff !important;"
+        if kyaku == "逃": k_style = "background:#ff7675; color:#fff !important;"
+        elif kyaku == "先": k_style = "background:#e67e22; color:#fff !important;"
+        elif kyaku == "差": k_style = "background:#3498db; color:#fff !important;"
+        elif kyaku == "追": k_style = "background:#2ecc71; color:#fff !important;"
         kyaku_badge = f"<span style='{k_style} padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span>"
         
         html += f"""<tr>
-<td style='font-weight:bold; color:#c94a65;'>{int(r['馬番_num']):02d}</td>
-<td style='text-align:left; font-weight:800; color:#5a3d46;'>{r.get('馬名', '-')}</td>
-<td style='color:#7f8c8d;'>{r.get('騎手', '-')}</td>
+<td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
+<td style='text-align:left; font-weight:800; color:#5a3d46 !important;'>{r.get('馬名', '-')}</td>
+<td style='color:#666666 !important;'>{r.get('騎手', '-')}</td>
 <td>{kyaku_badge}</td>
-<td style='color:#5a3d46;'><b>{int(r['score_brain1'])}点</b></td>
-<td style='color:#c94a65;'><b>{float(r.get('win_prob',0))*100:.1f}%</b></td>
-<td style='color:#7f8c8d;'>{odds_val:.1f}倍</td>
+<td style='color:#5a3d46 !important;'><b>{int(r['score_brain1'])}点</b></td>
+<td style='color:#c94a65 !important;'><b>{float(r.get('win_prob',0))*100:.1f}%</b></td>
+<td style='color:#666666 !important;'>{odds_val:.1f}倍</td>
 <td style='{ev_style}'><b>{ev_val:.2f}</b></td>
 <td><span class='badge-idx'>{r.get('custom_time_index', 0)}</span></td>
-<td>{r.get('custom_start_index', 0)}</td>
+<td style='color:#5a3d46 !important;'>{r.get('custom_start_index', 0)}</td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
 </tr>"""
     html += "</tbody></table></div>"
@@ -344,9 +348,8 @@ with tab_forecast:
                     for j, r in enumerate(chunk):
                         col = cols[j]
                         rid = place_df[place_df['r_num'] == r]['race_id'].iloc[0]
-                        mark = markers.get(rid, "")
-                        label = f"{r}R {mark}".strip()
-                        btn_type = "primary" if "熱" in mark else "secondary"
+                        label = f"{r}R"
+                        btn_type = "primary" if st.session_state['selected_race_id'] == rid else "secondary"
                         if col.button(label, key=f"btn_{rid}", use_container_width=True, type=btn_type):
                             st.session_state['selected_race_id'] = rid
 
@@ -364,14 +367,20 @@ with tab_forecast:
         race_display_name = f"{info['place_name']} {info['r_num']}R 【{rname}】"
         st.markdown(f"<h2>🚀 {race_display_name}</h2>", unsafe_allow_html=True)
         
-        scored_df = calculate_race_scores(target_id, df_future)
+        # 🌧️ 馬場状態の選択UIを追加
+        selected_baba = st.radio("🌧️ 現在の馬場状態を選択してください", ["良", "稍重", "重", "不良"], horizontal=True, index=["良", "稍重", "重", "不良"].index(st.session_state['baba_status']))
+        if selected_baba != st.session_state['baba_status']:
+            st.session_state['baba_status'] = selected_baba
+            st.rerun()
+        
+        scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
         if scored_df is not None:
             st.markdown("<div class='section-header'>📊 勝ち子ちゃんのAIスコア＆独自指数</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🎀 Geminiで【穴馬を含めた厳選4頭】を予想", type="primary", use_container_width=True):
+        if st.button("🎀 Geminiで【馬場を加味した厳選4頭】を予想", type="primary", use_container_width=True):
             if not api_key_input:
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
@@ -396,21 +405,21 @@ with tab_forecast:
 あなたは地方競馬の回収率・穴馬特化型AI「勝ち子ちゃん」です。
 
 【回収率を跳ねさせる穴馬戦略】
+* 今日の馬場状態は【{st.session_state['baba_status']}】です。ダート競馬における馬場状態のセオリー（重・不良なら逃げ先行・スピード有利、良なら差しやスタミナ警戒など）を必ず展開予想と印の根拠に組み込んでください。
 * {ana_info}
 * 予想は提供された**【◎, ◯, ▲, △】の上位4頭のみ**を厳守してください。
-* 各馬の「脚質」を確認し、「逃げ・先行馬が多数いるなら差し馬が有利になる」などの展開予想を必ず組み込んでください。
 * ガチガチの人気決着（例: 1番人気→2番人気）はトリガミになるため、必ず「期待値（EV）が1.0を超えている馬」や「展開が向きそうな人気薄」を▲や△に抜擢し、ヒモ荒れを狙ってください。
 * 買い目は【4頭のみ・合計3〜4点】の極小点数で構成し、回収率を最大化してください。
 
 【出力フォーマット】
 ---
-### 🌸 レース展開と穴馬の狙い目
-* （脚質分布に基づくペース想定と、▲・△に抜擢した穴馬の激走理由を解説）
+### 🌸 馬場傾向・レース展開のポイント
+* （馬場状態【{st.session_state['baba_status']}】を考慮したペース想定と、▲・△に抜擢した穴馬の激走理由を解説）
 
 ### 🎯 勝ち子ちゃんの厳選4頭
 * **◎ 本命:** 〇〇番（馬名） - （脚質・抜擢理由）
 * **◯ 対抗:** 〇〇番（馬名） - （見解）
-* **▲ 単穴:** 〇〇番（馬名） - （期待値や展開利などのヒモ穴根拠）
+* **▲ 単穴:** 〇〇番（馬名） - （馬場適性や期待値などのヒモ穴根拠）
 * **△ 連下:** 〇〇番（馬名） - （押さえの根拠）
 
 ### 🎀 推奨買い目（4頭のみ・合計3〜4点）
@@ -421,7 +430,7 @@ with tab_forecast:
 """
             prompt = f"対象レース: {selected_date} {race_display_name}\n\n対象4頭データ:\n" + "\n".join(table_summary)
 
-            with st.spinner("🎀 指数と期待値から、ヒモ荒れを捉える少数買い目を生成中..."):
+            with st.spinner("🎀 馬場状態と指数から、ヒモ荒れを捉える少数買い目を生成中..."):
                 client = genai.Client(api_key=api_key_input)
                 try:
                     response = client.models.generate_content(
@@ -433,7 +442,7 @@ with tab_forecast:
                         )
                     )
                     res_text = response.text
-                    st.markdown(f"<div style='background:white; padding:24px; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.04); border: 2px solid #f2cdd5;'>{res_text}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='gemini-output-box'>{res_text}</div>", unsafe_allow_html=True)
                     
                     honmei_match = re.search(r'◎.*?[）:]\s*(\d+)番', res_text)
                     h_umaban = int(honmei_match.group(1)) if honmei_match else int(scored_df.iloc[0]['馬番_num'])
@@ -523,9 +532,9 @@ with tab_dashboard:
                     col.markdown(f'''
                     <div style="border:1px solid #f2cdd5; padding:10px; border-radius:12px; text-align:center; background-color:#fff; box-shadow:0 2px 6px rgba(0,0,0,0.03);">
                         <div style="font-weight:bold; font-size:1.05em; color:#5a3d46; margin-bottom:5px;">{name}</div>
-                        <div style="font-size:0.8em; color:#7f8c8d;">投資: {int(inv_val):,}円</div>
-                        <div style="font-size:0.8em; color:#7f8c8d;">的中: {(hits_val/total)*100:.1f}%</div>
-                        <div style="font-size:0.8em; color:#7f8c8d;">回収: {roi_val:.1f}%</div>
+                        <div style="font-size:0.8em; color:#666666;">投資: {int(inv_val):,}円</div>
+                        <div style="font-size:0.8em; color:#666666;">的中: {(hits_val/total)*100:.1f}%</div>
+                        <div style="font-size:0.8em; color:#666666;">回収: {roi_val:.1f}%</div>
                         <div style="font-weight:bold; color:{color}; margin-top:5px; font-size:1.1em;">{sign}{profit_val:,} 円</div>
                     </div>
                     ''', unsafe_allow_html=True)
