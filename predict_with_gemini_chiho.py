@@ -13,18 +13,24 @@ from google import genai
 from google.genai import types
 
 # ==========================================
-# 🌸 1. 勝ち子ちゃん専用 カスタムCSS & デザイン設定
+# 🌸 1. 勝ち子ちゃん専用 カスタムCSS & デザイン設定（スマホ・ダークモード視認性完全固定）
 # ==========================================
 st.set_page_config(page_title="AI予想 勝ち子ちゃん | 地方版", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
+    /* 全体の背景と基本文字色を強制指定 */
     .stApp {
         background-color: #fcf9f9 !important;
         color: #333333 !important;
         font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', Arial, sans-serif;
     }
-    p, span, label, div, li, td, th { color: #333333; }
+    
+    /* すべてのテキスト要素の文字化け・白飛び防止 */
+    p, span, label, div, li, td, th {
+        color: #333333;
+    }
+    
     h1 { font-size: 1.9rem !important; color: #c94a65 !important; font-weight: 800; }
     h2 { font-size: 1.4rem !important; color: #5a3d46 !important; }
     h3 { font-size: 1.2rem !important; color: #c94a65 !important; }
@@ -41,7 +47,9 @@ st.markdown("""
         background-color: #ffffff;
     }
     
-    .kachi-table { width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #ffffff; white-space: nowrap; }
+    .kachi-table {
+        width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #ffffff; white-space: nowrap;
+    }
     .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff !important; font-weight: bold; }
     .kachi-table th { padding: 10px 12px; text-align: center; border-right: 1px solid rgba(255,255,255,0.2); color: #ffffff !important; }
     .kachi-table th:last-child { border-right: none; }
@@ -54,14 +62,25 @@ st.markdown("""
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; box-shadow: none; }
+    
     .badge-idx { background-color: #fff0f3; color: #c94a65 !important; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.85em; border: 1px solid #f2cdd5; }
 
+    /* AI予想結果ボックス */
     .gemini-output-box {
-        background-color: #ffffff !important; color: #222222 !important; padding: 20px;
-        border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); border: 2px solid #f2cdd5; margin-top: 15px;
+        background-color: #ffffff !important;
+        color: #222222 !important;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+        border: 2px solid #f2cdd5;
+        margin-top: 15px;
     }
-    .gemini-output-box * { color: #222222 !important; }
-    .gemini-output-box h3 { color: #c94a65 !important; }
+    .gemini-output-box * {
+        color: #222222 !important;
+    }
+    .gemini-output-box h3 {
+        color: #c94a65 !important;
+    }
 
     @media (max-width: 768px) {
         .block-container { padding-top: 1rem; padding-bottom: 1rem; padding-left: 0.5rem; padding-right: 0.5rem; }
@@ -223,17 +242,16 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
 
     # 🌧️【馬場状態による指数補正】
     if baba_status in ["重", "不良"]:
-        # 重・不良は前残りが激増するため、逃げ・先行馬の指数を大きく底上げ
         is_front = race_df['脚質'].isin(["逃", "先"])
         raw_start = np.where(is_front, raw_start + 6.0, raw_start - 2.0)
         raw_time = np.where(is_front, raw_time + 4.0, raw_time - 1.0)
     elif baba_status == "良":
-        # タフな良馬場は差し馬の台頭が増えるため、差し・追込馬にボーナス
         is_closer = race_df['脚質'].isin(["差", "追"])
         raw_time = np.where(is_closer, raw_time + 2.0, raw_time - 1.0)
 
-    race_df['custom_time_index'] = pd.Series(raw_time).clip(30.0, 99.0).round(1)
-    race_df['custom_start_index'] = pd.Series(raw_start).clip(30.0, 99.0).round(1)
+    # 💡 NaNを埋めるガード
+    race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(30.0, 99.0).round(1)
+    race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(30.0, 99.0).round(1)
 
     # 勝率の算出
     inv_odds = 1.0 / race_df['単勝_num'].clip(lower=1.0)
@@ -252,17 +270,44 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     
     ana_bonus = (time_rank_norm * 0.5 + start_rank_norm * 0.5) * (race_df['単勝_num'] >= 10.0).astype(int) * 0.05
     
-    race_df['win_prob'] = base_prob + ana_bonus
-    race_df['win_prob'] = race_df['win_prob'] / race_df['win_prob'].sum()
+    # 💡 確率計算でNaNを0で埋めてゼロ除算を回避
+    race_df['win_prob'] = (base_prob + ana_bonus).fillna(0)
+    win_sum = race_df['win_prob'].sum()
+    if win_sum > 0:
+        race_df['win_prob'] = race_df['win_prob'] / win_sum
+    else:
+        race_df['win_prob'] = 1.0 / len(race_df)
 
-    race_df['ev_brain2'] = (race_df['win_prob'] * race_df['単勝_num']).round(2)
+    race_df['ev_brain2'] = (race_df['win_prob'] * race_df['単勝_num']).fillna(0).round(2)
 
     max_p = race_df['win_prob'].max()
+    if pd.isna(max_p) or max_p == 0:
+        max_p = 0.01
+
     ev_score = (race_df['ev_brain2'].clip(0, 3.0) / 3.0) * 20.0
     prob_score = (race_df['win_prob'] / max_p) * 75.0
-    race_df['score_brain1'] = (prob_score + ev_score).clip(10, 98).round().astype(int)
+    
+    # 💡 NaNを10点で埋めてからInt型に変換するガード
+    race_df['score_brain1'] = (prob_score + ev_score).fillna(10).clip(10, 98).round().astype(int)
 
     return race_df.sort_values(by=['score_brain1', 'win_prob'], ascending=[False, False]).reset_index(drop=True)
+
+def get_all_markers():
+    markers = {}
+    if df_future.empty: return markers
+    for rid in df_future['race_id'].unique():
+        sdf = calculate_race_scores(rid, df_future)
+        if sdf is not None and not sdf.empty:
+            top_contenders = len(sdf[sdf['score_brain1'] >= 80])
+            if top_contenders == 3:
+                markers[rid] = "🔥激熱"
+            elif top_contenders == 2:
+                markers[rid] = "💥熱"
+            else:
+                markers[rid] = ""
+    return markers
+
+markers = get_all_markers()
 
 # ==========================================
 # 4. サイドバー UI & テーブル生成
