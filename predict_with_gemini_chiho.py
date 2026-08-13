@@ -209,6 +209,9 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy()
     if race_df.empty: return None
 
+    # 💡【重要】ここでインデックス（背番号）をリセットしてズレを完全に防ぎます
+    race_df = race_df.reset_index(drop=True)
+
     model = model_data.get('model') if model_data else None
     features = model_data.get('features', []) if model_data else []
 
@@ -249,7 +252,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         is_closer = race_df['脚質'].isin(["差", "追"])
         raw_time = np.where(is_closer, raw_time + 2.0, raw_time - 1.0)
 
-    # 💡 NaNを埋めるガード
+    # 💡 indexのズレがなくなったので、ここで正しく数値が割り当てられます
     race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(30.0, 99.0).round(1)
     race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(30.0, 99.0).round(1)
 
@@ -270,7 +273,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     
     ana_bonus = (time_rank_norm * 0.5 + start_rank_norm * 0.5) * (race_df['単勝_num'] >= 10.0).astype(int) * 0.05
     
-    # 💡 確率計算でNaNを0で埋めてゼロ除算を回避
     race_df['win_prob'] = (base_prob + ana_bonus).fillna(0)
     win_sum = race_df['win_prob'].sum()
     if win_sum > 0:
@@ -287,11 +289,9 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     ev_score = (race_df['ev_brain2'].clip(0, 3.0) / 3.0) * 20.0
     prob_score = (race_df['win_prob'] / max_p) * 75.0
     
-    # 💡 NaNを10点で埋めてからInt型に変換するガード
     race_df['score_brain1'] = (prob_score + ev_score).fillna(10).clip(10, 98).round().astype(int)
 
     return race_df.sort_values(by=['score_brain1', 'win_prob'], ascending=[False, False]).reset_index(drop=True)
-
 def get_all_markers():
     markers = {}
     if df_future.empty: return markers
