@@ -28,8 +28,8 @@ st.markdown("""
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
     .kachi-table { width: 100%; border-collapse: collapse; background-color: #ffffff; white-space: nowrap; }
     .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff !important; font-weight: bold; }
-    .kachi-table th { padding: 10px 12px; text-align: center; border-right: 1px solid rgba(255,255,255,0.2); color: #ffffff !important; }
-    .kachi-table td { padding: 8px 12px; text-align: center; border-bottom: 1px solid #f2eced; color: #5a3d46 !important; font-weight: 500; }
+    .kachi-table th { padding: 8px 10px; text-align: center; border-right: 1px solid rgba(255,255,255,0.2); color: #ffffff !important; font-size: 0.85em; }
+    .kachi-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #f2eced; color: #5a3d46 !important; font-weight: 500; font-size: 0.9em; }
     .kachi-table tbody tr:hover td { background: #fff5f7; }
     .badge-mark { color: #fff !important; padding: 4px 10px; border-radius: 20px; font-weight: bold; font-size: 0.85em; display: inline-block; min-width: 55px; }
     .badge-honmei { background: linear-gradient(135deg, #ff4757, #ff6b81); }
@@ -64,7 +64,7 @@ MODEL_FILE = "keiba_ai_model_nar.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 📍 競馬場ごとのコースバイアス定義（逃・先・差・追の有利不利乗数）
+# 📍 競馬場ごとのコースバイアス定義
 TRACK_BIAS = {
     "浦和": {"逃": 1.25, "先": 1.15, "差": 0.80, "追": 0.70},
     "園田": {"逃": 1.20, "先": 1.15, "差": 0.85, "追": 0.75},
@@ -140,7 +140,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy()
     if race_df.empty: return None
 
-    # 💡 安定版のNaN対策インデックスリセット
     race_df = race_df.reset_index(drop=True)
 
     place = race_df['place_name'].iloc[0] if 'place_name' in race_df.columns else "地方"
@@ -170,14 +169,12 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['jockey_win_rate'] = race_df['騎手'].apply(lambda x: get_j(x, 'j_win_rate', 0.08))
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
-    # 📍 アルティメット機能：コースバイアス適用
     race_df['bias_mult'] = race_df['脚質'].apply(lambda k: bias_dict.get(k, 1.0))
 
     odds_bonus = (15.0 - race_df['単勝_num'].clip(upper=30.0)) * 0.4
     raw_time = (75.0 - (race_df['recent_avg_rank'].clip(lower=1.0, upper=14.0) - 3.0) * 3.0 + (race_df['weight_num'] - 54.0) * 1.5 + odds_bonus) * (1.0 + (1.0 - race_df['bias_mult'])*0.5)
     raw_start = ((12.0 - race_df['first_corner'].clip(upper=10.0)) * 6.5 + (15.0 - race_df['単勝_num'].clip(upper=20.0)) * 0.3) * race_df['bias_mult']
 
-    # 🌧️【馬場状態による指数補正】
     if baba_status in ["重", "不良"]:
         is_front = race_df['脚質'].isin(["逃", "先"])
         raw_start = np.where(is_front, raw_start + 6.0, raw_start - 2.0)
@@ -186,11 +183,9 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         is_closer = race_df['脚質'].isin(["差", "追"])
         raw_time = np.where(is_closer, raw_time + 3.0, raw_time - 1.0)
 
-    # 💡 安定版のNaNガード
     race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(30.0, 99.0).round(1)
     race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(30.0, 99.0).round(1)
 
-    # 勝率の算出
     inv_odds = 1.0 / race_df['単勝_num'].clip(lower=1.0)
     base_prob = np.power(inv_odds, 1.2)
     
@@ -213,7 +208,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     else:
         race_df['win_prob'] = 1.0 / len(race_df)
 
-    # 💸 アルティメット機能：異常オッズ（大口投票）検知
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.55) & (race_df['単勝_num'] >= 5.0)
 
@@ -225,7 +219,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     ev_score = (race_df['ev_brain2'].clip(0, 3.0) / 3.0) * 20.0
     prob_score = (race_df['win_prob'] / max_p) * 75.0
     
-    # 💡 NaNガード＋異常オッズボーナス加算
     raw_score = (prob_score + ev_score).fillna(10).astype(int)
     race_df['score_brain1'] = np.where(race_df['is_abnormal'], raw_score + 15, raw_score)
     race_df['score_brain1'] = race_df['score_brain1'].clip(10, 99)
@@ -248,10 +241,12 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>騎手</th><th>脚質</th><th>AIスコア</th><th>オッズ</th><th>適正オッズ</th><th>期待値</th><th>異常検知</th><th>タイム指</th><th>印</th></tr></thead><tbody>"
+    # 💡 「スタート指」を復活させました！
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>騎手</th><th>脚質</th><th>AIスコア</th><th>勝率</th><th>オッズ</th><th>適正オッズ</th><th>期待値</th><th>異常検知</th><th>タイム指</th><th>スタート指</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         ev_val, odds_val = float(r.get('ev_brain2', 0)), float(r.get('単勝_num', 0))
+        win_prob_val = float(r.get('win_prob', 0)) * 100
         mark = get_mark(i)
         
         b_cls = "badge-keshi"
@@ -277,11 +272,13 @@ def generate_beautiful_table(disp_df):
 <td style='color:#666666 !important;'>{r.get('騎手', '-')}</td>
 <td>{kyaku_badge}</td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_brain1'])}点</b></td>
+<td style='color:#c94a65 !important;'><b>{win_prob_val:.1f}%</b></td>
 <td style='color:#666666 !important;'>{odds_val:.1f}倍</td>
 <td style='color:#bdc3c7 !important; font-size:0.9em;'>{r.get('expected_odds', 0)}倍</td>
 <td style='{ev_style}'><b>{ev_val:.2f}</b></td>
 <td>{abnormal_badge}</td>
 <td><span class='badge-idx'>{r.get('custom_time_index', 0)}</span></td>
+<td style='color:#5a3d46 !important;'>{r.get('custom_start_index', 0)}</td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
 </tr>"""
     html += "</tbody></table></div>"
@@ -356,9 +353,11 @@ with tab_forecast:
             for idx, row in scored_df.iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
+                    # 💡 Geminiへの送信データにもスタート指数を復活！
                     table_summary.append(
                         f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | "
-                        f"オッズ:{row['単勝_num']}倍 (適正:{row.get('expected_odds',0)}倍) | 期待値:{row['ev_brain2']:.2f} | 異常投票:{'あり' if row.get('is_abnormal') else 'なし'}"
+                        f"オッズ:{row['単勝_num']}倍 (適正:{row.get('expected_odds',0)}倍) | 期待値:{row['ev_brain2']:.2f} | 異常投票:{'あり' if row.get('is_abnormal') else 'なし'} | "
+                        f"タイム指:{row.get('custom_time_index',0)} | スタート指:{row.get('custom_start_index',0)}"
                     )
 
             system_instruction = f"""
@@ -404,7 +403,6 @@ with tab_forecast:
                     res_text = response.text
                     st.markdown(f"<div class='gemini-output-box'>{res_text}</div>", unsafe_allow_html=True)
                     
-                    # 💡 安定版の履歴保存ロジック（そのまま維持）
                     honmei_match = re.search(r'◎.*?[）:]\s*(\d+)番', res_text)
                     h_umaban = int(honmei_match.group(1)) if honmei_match else int(scored_df.iloc[0]['馬番_num'])
                     all_nums = re.findall(r'(\d+)番', res_text)
@@ -429,7 +427,7 @@ with tab_forecast:
                     st.error(f"エラーが発生しました: {e}")
 
 # ==========================================
-# 6. ダッシュボード (安定版そのまま)
+# 6. ダッシュボード
 # ==========================================
 with tab_dashboard:
     st.markdown("<div class='section-header'>📈 地方実戦成績ダッシュボード</div>", unsafe_allow_html=True)
