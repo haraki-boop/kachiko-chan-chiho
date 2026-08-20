@@ -45,7 +45,7 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (純粋能力・期待値・トラックバイアス完全統合版)")
+with col2: st.title("AI予想 勝ち子ちゃん (純粋能力最優先・完全版)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
@@ -140,11 +140,14 @@ def build_past_dicts(df_p):
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
         for h, group in df_p.sort_values('date' if 'date' in df_p.columns else 'race_id').groupby('馬名_clean'):
             r3 = group.tail(3)
+            r5 = group.tail(5)
             horse_dict[h] = {
                 'prev_dist': r3.iloc[-1].get('distance_num', 1400),
                 'prev_weight': pd.to_numeric(r3.iloc[-1].get('斤量'), errors='coerce') if '斤量' in r3.columns else 54.0,
                 'prev_1c': pd.to_numeric(r3.get('first_corner', pd.Series([8.0])), errors='coerce').fillna(8.0).mean(),
-                'recent_avg_rank': r3.get('target_rank', pd.Series([6.0])).mean()
+                'recent_avg_rank_3': r3.get('target_rank', pd.Series([6.0])).mean(),
+                'recent_avg_rank_5': r5.get('target_rank', pd.Series([6.0])).mean(),
+                'career_runs': len(group)
             }
     return jockey_dict, horse_dict
 
@@ -154,7 +157,7 @@ def get_kyakushitsu(fc):
     return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
 
 # ==========================================
-# 3. フルスペックAIスコア ＆ ピュア勝率算出
+# 3. フルスペックAIスコア（純粋能力・3着内率優先）
 # ==========================================
 def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     if target_df.empty: return None
@@ -187,14 +190,16 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['prev_weight'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_weight', 54.0))
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_1c', 6.0))
     race_df['prev_1c'] = race_df['first_corner']
-    race_df['recent_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank', 6.0))
-    race_df['same_dist_avg_rank'] = race_df['recent_avg_rank']
+    race_df['recent_avg_rank_3'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_3', 6.0))
+    race_df['recent_avg_rank_5'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_5', 6.0))
+    race_df['same_dist_avg_rank'] = race_df['recent_avg_rank_3']
+    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('career_runs', 5))
     race_df['jockey_win_rate'] = race_df['騎手'].apply(lambda x: jockey_dict.get(x, {}).get('j_win_rate', 0.05))
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
     race_df['bias_mult'] = race_df['脚質'].apply(lambda k: bias_dict.get(k, 1.0))
 
     # トラックバイアス・馬場状態補正
-    raw_time = (75.0 - (race_df['recent_avg_rank'].clip(1, 14) - 3.0) * 3.5 + (race_df['斤量'] - 54.0) * 1.5) * (1.0 + (1.0 - race_df['bias_mult'])*0.5)
+    raw_time = (75.0 - (race_df['recent_avg_rank_3'].clip(1, 14) - 3.0) * 3.5 + (race_df['斤量'] - 54.0) * 1.5) * (1.0 + (1.0 - race_df['bias_mult'])*0.5)
     raw_start = ((12.0 - race_df['first_corner'].clip(upper=10.0)) * 6.5) * race_df['bias_mult']
 
     if baba_status in ["重", "不良"]:
@@ -219,47 +224,37 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         race_df[f'{col}_zscore'] = (race_df[col] - mean_val) / std_val
         race_df[f'{col}_rank'] = race_df[col].rank(ascending=False, method='min')
 
-    # AIモデル予測 (Ranker/Classifier両対応)
-    norm_scores = np.zeros(len(race_df))
-    if model_data:
+    # AIモデル推論（純粋能力からの複勝率・勝率）
+    if model_data and 'model_place' in model_data:
         try:
-            m_model = model_data.get('ranker_model', model_data.get('model_win', model_data.get('model')))
             X = race_df[model_data['features']].fillna(0.0)
-            if hasattr(m_model, "predict_proba"):
-                preds = m_model.predict_proba(X)[:, 1]
-            else:
-                preds = m_model.predict(X)
-            
-            p_min, p_max = preds.min(), preds.max()
-            if p_max > p_min: norm_scores = (preds - p_min) / (p_max - p_min)
-        except: pass
+            race_df['place_prob'] = model_data['model_place'].predict_proba(X)[:, 1]
+            race_df['win_prob'] = model_data['model_win'].predict_proba(X)[:, 1]
+        except:
+            race_df['place_prob'] = (14.0 - race_df['recent_avg_rank_3']) / 14.0
+            race_df['win_prob'] = race_df['place_prob'] / 3.0
+    else:
+        race_df['place_prob'] = (14.0 - race_df['recent_avg_rank_3']) / 14.0
+        race_df['win_prob'] = race_df['place_prob'] / 3.0
 
-    # 優先フラグ計算
+    # 優先フラグ補正
     race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
     priority_bonus = np.zeros(len(race_df))
-    priority_bonus += np.where(race_df['first_corner_rank'] <= 2, 0.25, 0.0)
-    priority_bonus += np.where(race_df['jockey_win_rate'] >= 0.15, 0.20, 0.0)
-    priority_bonus += np.where(race_df['distance_num'] < race_df['prev_dist'], 0.10, 0.0)
-    priority_bonus += np.where(race_df['斤量'] < race_df['prev_weight'], 0.05, 0.0)
+    priority_bonus += np.where(race_df['first_corner_rank'] <= 2, 0.05, 0.0)
+    priority_bonus += np.where(race_df['jockey_win_rate'] >= 0.15, 0.05, 0.0)
 
-    # 純粋勝率
-    pure_win_score = (norm_scores * 0.3) + ((race_df['custom_time_index']-20)/80 * 0.3) + ((race_df['custom_start_index']-20)/80 * 0.2) + priority_bonus
-    win_sum = pure_win_score.sum()
-    race_df['win_prob'] = pure_win_score / win_sum if win_sum > 0 else 1.0 / len(race_df)
+    # 💡 期待値底上げを排除し、純粋な3着内確率＋能力値のみで最終スコア（点数）を決定
+    final_ability_prob = race_df['place_prob'] + priority_bonus
+    max_p = max(final_ability_prob.max(), 0.01)
+    race_df['score_brain1'] = ((final_ability_prob / max_p) * 90 + 9).clip(10, 99).astype(int)
 
-    # 期待値 & 異常オッズ（大口投票）検知
+    # 期待値・適正オッズ計算（人間側の判断用として算出）
     race_df['ev_brain2'] = (race_df['win_prob'] * race_df['単勝_num']).fillna(0).round(2)
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.5) & (race_df['単勝_num'] >= 4.0)
 
-    max_p = max(race_df['win_prob'].max(), 0.01)
-    ev_score_pt = (race_df['ev_brain2'].clip(0, 3.0) / 3.0) * 35.0 
-    prob_score_pt = (race_df['win_prob'] / max_p) * 60.0
-    
-    raw_score = (prob_score_pt + ev_score_pt).fillna(10).astype(int)
-    race_df['score_brain1'] = np.where(race_df['is_abnormal'], raw_score + 15, raw_score).clip(10, 99)
-
-    return race_df.sort_values(by=['score_brain1', 'recent_avg_rank'], ascending=[False, True]).reset_index(drop=True)
+    # **オッズに惑わされず、純粋能力スコアの最も高い順でソート（印を付与）**
+    return race_df.sort_values(by=['score_brain1', 'place_prob'], ascending=[False, False]).reset_index(drop=True)
 
 # ==========================================
 # 4. UI ＆ テーブル描画
@@ -281,7 +276,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手</th><th>脚質</th><th>優先フラグ</th><th>AIスコア</th><th>勝率</th><th>オッズ</th><th>適正</th><th>期待値</th><th>異常</th><th>印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手</th><th>脚質</th><th>優先フラグ</th><th>AI能力スコア</th><th>3着内率</th><th>1着率</th><th>単勝オッズ</th><th>適正オッズ</th><th>異常</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
@@ -297,7 +292,6 @@ def generate_beautiful_table(disp_df):
         flag_str = "<br>".join(flags) if flags else "-"
 
         abnormal = "<span class='badge-alert'>🚨大口</span>" if r.get('is_abnormal', False) else "-"
-        ev_style = "color:#e74c3c !important; font-weight:900;" if r['ev_brain2'] >= 1.0 else "color:#5a3d46;"
         weight_str = format_weight_display(r.get('馬体重', '-'))
         
         html += f"""<tr>
@@ -308,10 +302,10 @@ def generate_beautiful_table(disp_df):
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='line-height:1.2;'>{flag_str}</td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_brain1'])}点</b></td>
-<td style='color:#c94a65 !important;'><b>{r['win_prob']*100:.1f}%</b></td>
+<td style='color:#c94a65 !important;'><b>{r['place_prob']*100:.1f}%</b></td>
+<td style='color:#666666 !important;'>{r['win_prob']*100:.1f}%</td>
 <td style='color:#666666 !important;'>{r['単勝_num']:.1f}倍</td>
 <td style='color:#bdc3c7 !important; font-size:0.9em;'>{r.get('expected_odds', 0)}倍</td>
-<td style='{ev_style}'><b>{r['ev_brain2']:.2f}</b></td>
 <td>{abnormal}</td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
 </tr>"""
@@ -358,10 +352,10 @@ with tab_forecast:
         scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
         if scored_df is not None:
-            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 {info['place_name']}優先フラグ反映済)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 {info['place_name']}優先フラグ・純粋能力順)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-        if st.button("🎀 Geminiで【3連複6点＆3連単8点フォーメーション】を予想", type="primary", use_container_width=True):
+        if st.button("🎀 Geminiで【純粋能力分析＆推奨フォーメーション】を予想", type="primary", use_container_width=True):
             if not api_key_input: 
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
@@ -372,29 +366,30 @@ with tab_forecast:
                 if mark != "消":
                     clean_w = format_weight_display(row.get('馬体重', ''))
                     table_summary.append(
-                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 馬体重:{clean_w} | 脚質:{row['脚質']} | "
+                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 能力スコア:{row['score_brain1']} | 3着内率:{row['place_prob']*100:.1f}% | "
                         f"優先フラグ:{row.get('single_escape_flag')==1} (独走逃げ) / {row.get('jockey_win_rate',0)>=0.15} (凄腕騎手) | "
-                        f"オッズ:{row['単勝_num']}倍 (適正:{row.get('expected_odds',0)}倍) | 期待値:{row['ev_brain2']:.2f} | 異常投票:{'あり' if row.get('is_abnormal') else 'なし'}"
+                        f"オッズ:{row['単勝_num']}倍 (適正:{row.get('expected_odds',0)}倍) | 異常投票:{'あり' if row.get('is_abnormal') else 'なし'}"
                     )
 
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
-バックテストで最も高い投資効果が証明された【Cプラン（2本柱）】の買い目を案内してください。
+オッズや人気を排除した「純粋な3着内率・能力順」で評価しています。
+この評価を元に、ユーザーが「勝負するか見送るか」を判断できる解説と買い目を案内してください。
 
 【出力フォーマット】
 ---
-### 🌸 馬場傾向・優先フラグ考察
+### 🌸 馬場傾向・展開考察
 * （短く簡潔に展開や考察を記述）
 
-### 🎯 勝ち子ちゃんの印
+### 🎯 勝ち子ちゃんの純粋評価印
 * ◎ 本命: 〇〇番
 * ◯ 対抗: 〇〇番
 * ▲ 単穴: 〇〇番
 * △1 連下: 〇〇番
 * △2 押さえ: 〇〇番
 
-### 🎀 推奨買い目 (Cプラン)
-* **【手堅く勝負】3連複 1頭軸流し (6点)**
+### 🎀 推奨買い目
+* **【手堅く勝負】3连複 1頭軸流し (6点)**
   * ◎ ＝ ◯, ▲, △1, △2
 * **【高配当狙い】3連単 最強フォーメーション (8点)**
   * 1着: ◎, ◯
