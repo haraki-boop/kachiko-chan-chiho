@@ -57,14 +57,28 @@ HISTORY_CSV, FUTURE_CSV, ML_TARGET_CSV, MODEL_FILE = "prediction_history_chiho.c
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 TRACK_BIAS = {"浦和": {"逃": 1.25, "先": 1.15, "差": 0.80, "追": 0.70}, "大井": {"逃": 0.90, "先": 1.00, "差": 1.20, "追": 1.15}, "川崎": {"逃": 1.15, "先": 1.10, "差": 0.95, "追": 0.85}, "船橋": {"逃": 1.05, "先": 1.05, "差": 1.05, "追": 0.95}, "園田": {"逃": 1.20, "先": 1.15, "差": 0.85, "追": 0.75}}
 
-def clean_horse_name(name): return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
+def clean_horse_name(name): 
+    return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
+# 💡【修正】文字化け回避つきCSV読込関数
 def load_csv_utf8(path, dtype_dict=None):
-    if not os.path.exists(path) or os.path.getsize(path) == 0: return pd.DataFrame()
-    for enc in ['utf-8-sig', 'utf-8', 'cp932']:
-        try: return pd.read_csv(path, dtype=dtype_dict, encoding=enc)
-        except: continue
-    return pd.DataFrame()
+    if not os.path.exists(path) or os.path.getsize(path) == 0: 
+        return pd.DataFrame()
+    for enc in ['utf-8-sig', 'cp932', 'shift_jis', 'utf-8']:
+        try:
+            df = pd.read_csv(path, dtype=dtype_dict, encoding=enc)
+            str_cols = df.select_dtypes(include=['object']).columns
+            if len(str_cols) > 0:
+                sample_text = "".join(df[str_cols].head(10).fillna('').astype(str).values.flatten())
+                if '' in sample_text:
+                    continue
+            return df
+        except Exception:
+            continue
+    try:
+        return pd.read_csv(path, dtype=dtype_dict, encoding='cp932', errors='replace')
+    except:
+        return pd.DataFrame()
 
 @st.cache_resource
 def load_model(): return joblib.load(MODEL_FILE) if os.path.exists(MODEL_FILE) else None
@@ -243,7 +257,10 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
 # ==========================================
 st.sidebar.header("🔄 画面の更新")
 api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
-if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_container_width=True): st.cache_data.clear(); st.cache_resource.clear(); st.rerun()
+if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_container_width=True): 
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.rerun()
 
 def get_mark(idx):
     if idx == 0: return "◎ 本命"
