@@ -118,11 +118,13 @@ def build_past_dicts(df_p):
     jockey_dict, trainer_dict, combo_dict, horse_dict, waku_place_dict = {}, {}, {}, {}, {}
     if not df_p.empty:
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
-        df_p['first_corner'] = pd.to_numeric(df_p.get('first_corner'), errors='coerce')
-        df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce')
-        df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
-        df_p['waku_num'] = pd.to_numeric(df_p.get('枠番'), errors='coerce').fillna(0)
-        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
+        
+        # 💡 列がない場合に備えた安全なパース
+        df_p['first_corner'] = pd.to_numeric(df_p['first_corner'], errors='coerce') if 'first_corner' in df_p.columns else np.nan
+        df_p['last_3f'] = pd.to_numeric(df_p['last_3f'] if 'last_3f' in df_p.columns else df_p.get('上り'), errors='coerce')
+        df_p['time_diff'] = pd.to_numeric(df_p['time_diff'] if 'time_diff' in df_p.columns else df_p.get('着差'), errors='coerce').fillna(1.5)
+        df_p['waku_num'] = pd.to_numeric(df_p['枠番'], errors='coerce').fillna(0) if '枠番' in df_p.columns else 0
+        df_p['distance_num'] = pd.to_numeric(df_p['distance'], errors='coerce').fillna(1400) if 'distance' in df_p.columns else 1400
         
         MINAMI_CODES = ['42', '43', '44', '45']
         df_p['place_code'] = df_p['race_id'].astype(str).str[4:6]
@@ -187,12 +189,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['baba_code'] = baba_map.get(baba_status, 1)
     race_df['is_bad_baba'] = (race_df['baba_code'] >= 3).astype(int)
 
-    race_df['単勝_num'] = pd.to_numeric(race_df.get('単勝'), errors='coerce').fillna(15.0)
-    race_df['distance_num'] = pd.to_numeric(race_df.get('distance'), errors='coerce').fillna(1400)
-    race_df['斤量'] = pd.to_numeric(race_df.get('斤量'), errors='coerce').fillna(54.0)
+    # 💡 出馬表に列が存在しない場合のクラッシュを防ぐ安全なパース
+    race_df['単勝_num'] = pd.to_numeric(race_df['単勝'], errors='coerce').fillna(15.0) if '単勝' in race_df.columns else 15.0
+    race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
+    race_df['斤量'] = pd.to_numeric(race_df['斤量'], errors='coerce').fillna(54.0) if '斤量' in race_df.columns else 54.0
     race_df.loc[(race_df['斤量'] == race_df['単勝_num']) | (race_df['斤量'] < 48.0) | (race_df['斤量'] > 63.0), '斤量'] = 54.0
-    race_df['馬番_num'] = pd.to_numeric(race_df.get('馬番'), errors='coerce').fillna(0)
-    race_df['waku_num'] = pd.to_numeric(race_df.get('枠番'), errors='coerce').fillna(0)
+    race_df['馬番_num'] = pd.to_numeric(race_df['馬番'], errors='coerce').fillna(0) if '馬番' in race_df.columns else 0
+    race_df['waku_num'] = pd.to_numeric(race_df['枠番'], errors='coerce').fillna(0) if '枠番' in race_df.columns else 0
     race_df['馬名_clean'] = race_df['馬名'].astype(str).apply(clean_horse_name)
 
     if '性齢' in race_df.columns:
