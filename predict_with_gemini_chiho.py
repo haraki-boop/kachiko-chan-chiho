@@ -216,26 +216,36 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     nige_count = race_df['is_nige_candidate'].sum()
     race_df['single_escape_flag'] = np.where((race_df['is_nige_candidate'] == 1) & (nige_count == 1), 1, 0)
 
-    # Zスコア標準化
-    features_to_zscore = ['斤量', 'first_corner', 'jockey_win_rate', 'custom_time_index', 'custom_start_index']
-    for col in features_to_zscore:
-        mean_val, std_val = race_df[col].mean(), race_df[col].std()
-        if pd.isna(std_val) or std_val == 0: std_val = 1e-5
-        race_df[f'{col}_zscore'] = (race_df[col] - mean_val) / std_val
-        race_df[f'{col}_rank'] = race_df[col].rank(ascending=False, method='min')
-
-    # AIモデル推論（純粋能力からの複勝率・勝率）
-    if model_data and 'model_place' in model_data:
+    # AIモデル推論（どのようなキー構造でもエラーで落ちない完全ガード）
+    race_df['place_prob'] = 0.3
+    race_df['win_prob'] = 0.1
+    
+    if model_data and isinstance(model_data, dict):
         try:
-            X = race_df[model_data['features']].fillna(0.0)
-            race_df['place_prob'] = model_data['model_place'].predict_proba(X)[:, 1]
-            race_df['win_prob'] = model_data['model_win'].predict_proba(X)[:, 1]
-        except:
-            race_df['place_prob'] = (14.0 - race_df['recent_avg_rank_3']) / 14.0
-            race_df['win_prob'] = race_df['place_prob'] / 3.0
-    else:
-        race_df['place_prob'] = (14.0 - race_df['recent_avg_rank_3']) / 14.0
-        race_df['win_prob'] = race_df['place_prob'] / 3.0
+            m_feat = model_data.get('features', [])
+            m_place = model_data.get('model_place', model_data.get('ranker_model', model_data.get('model')))
+            m_win = model_data.get('model_win', m_place)
+            
+            if m_feat and m_place:
+                # 必要な列を揃える
+                for f in m_feat:
+                    if f not in race_df.columns:
+                        race_df[f] = 0.0
+                X = race_df[m_feat].fillna(0.0)
+                
+                if hasattr(m_place, "predict_proba"):
+                    race_df['place_prob'] = m_place.predict_proba(X)[:, 1]
+                else:
+                    preds = m_place.predict(X)
+                    p_min, p_max = preds.min(), preds.max()
+                    race_df['place_prob'] = (preds - p_min) / (p_max - p_min + 1e-5) if p_max > p_min else 0.3
+                
+                if hasattr(m_win, "predict_proba"):
+                    race_df['win_prob'] = m_win.predict_proba(X)[:, 1]
+                else:
+                    race_df['win_prob'] = race_df['place_prob'] / 3.0
+        except Exception:
+            pass
 
     # 優先フラグ補正
     race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
@@ -243,17 +253,14 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     priority_bonus += np.where(race_df['first_corner_rank'] <= 2, 0.05, 0.0)
     priority_bonus += np.where(race_df['jockey_win_rate'] >= 0.15, 0.05, 0.0)
 
-    # 💡 期待値底上げを排除し、純粋な3着内確率＋能力値のみで最終スコア（点数）を決定
     final_ability_prob = race_df['place_prob'] + priority_bonus
     max_p = max(final_ability_prob.max(), 0.01)
     race_df['score_brain1'] = ((final_ability_prob / max_p) * 90 + 9).clip(10, 99).astype(int)
 
-    # 期待値・適正オッズ計算（人間側の判断用として算出）
     race_df['ev_brain2'] = (race_df['win_prob'] * race_df['単勝_num']).fillna(0).round(2)
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.5) & (race_df['単勝_num'] >= 4.0)
 
-    # **オッズに惑わされず、純粋能力スコアの最も高い順でソート（印を付与）**
     return race_df.sort_values(by=['score_brain1', 'place_prob'], ascending=[False, False]).reset_index(drop=True)
 
 # ==========================================
@@ -389,7 +396,7 @@ with tab_forecast:
 * △2 押さえ: 〇〇番
 
 ### 🎀 推奨買い目
-* **【手堅く勝負】3连複 1頭軸流し (6点)**
+* **【手堅く勝負】3連複 1頭軸流し (6点)**
   * ◎ ＝ ◯, ▲, △1, △2
 * **【高配当狙い】3連単 最強フォーメーション (8点)**
   * 1着: ◎, ◯
