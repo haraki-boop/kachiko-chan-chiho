@@ -5,7 +5,7 @@ import joblib
 import os
 import re
 
-print("🌸 勝ち子ちゃん 3連単特化モデル 学習スクリプト (フルスペック複眼AI版)")
+print("🌸 勝ち子ちゃん LGBMRankerモデル (フルスペック統合版)")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar.pkl"
@@ -17,30 +17,28 @@ if not os.path.exists(CSV_FILE):
 print("📊 過去データを読み込み、前処理を実行中...")
 df = pd.read_csv(CSV_FILE, low_memory=False)
 
-# --- 1. 着順の安全な正規化 ---
+# 1. 着順パース & ランキング評価（1着:3, 2着:2, 3着:1, 他:0）
 def parse_rank(x):
-    if pd.isna(x): return np.nan
+    if pd.isna(x): return 99.0
     s = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
     try: return float(s)
-    except: return np.nan
+    except: return 99.0
 
-df['target_rank'] = df['着順'].apply(parse_rank).fillna(6.0) if '着順' in df.columns else df.get('target_rank').apply(parse_rank).fillna(6.0)
+df['target_rank'] = df['着順'].apply(parse_rank) if '着順' in df.columns else df.get('target_rank').apply(parse_rank)
+df = df[df['target_rank'] < 90.0].copy() # 正常着順のみ抽出
+df['relevance'] = np.where(df['target_rank'] == 1.0, 3, np.where(df['target_rank'] == 2.0, 2, np.where(df['target_rank'] == 3.0, 1, 0)))
 
-# 💡 ターゲット作成 (1着確率 & 3着内確率)
-df['target_win'] = (df['target_rank'] == 1.0).astype(int)
-df['target_place'] = (df['target_rank'] <= 3.0).astype(int)
-
-# --- 2. 各種特徴量の抽出＆前処理 ---
+# 2. 基本列の数値化
 df['first_corner'] = pd.to_numeric(df.get('first_corner'), errors='coerce').fillna(8.0)
 df['斤量'] = pd.to_numeric(df.get('斤量'), errors='coerce').fillna(54.0)
 df['馬番_num'] = pd.to_numeric(df.get('馬番'), errors='coerce').fillna(0)
 df['distance_num'] = pd.to_numeric(df.get('distance'), errors='coerce').fillna(1400)
-df['馬名_clean'] = df['馬名'].astype(str).apply(lambda x: re.sub(r'[\s\u3000]+', '', x))
+df['馬名_clean'] = df['馬名'].astype(str).apply(lambda x: re.sub(r'[\s\u3000]+', '', str(x)))
 
 df['date'] = pd.to_datetime(df.get('date', pd.Series(['2020-01-01']*len(df))), errors='coerce')
 df = df.sort_values(['date', 'race_id']).reset_index(drop=True)
 
-# 性齢・馬体重パース
+# 3. 性齢 & 馬体重パース（元のロジックを完全継承）
 def parse_sex_age(val):
     if pd.isna(val): return 0, 4.0
     s = str(val).strip()
@@ -69,55 +67,53 @@ else:
 
 df['kinryo_weight_ratio'] = df['斤量'] / df['body_weight'].clip(lower=350.0)
 
-# 過去平均データの作成（カンニング防止）
+# 4. 過去平均成績 & 指数系（カンニング防止のshift）
 df['recent_avg_rank'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean()).fillna(6.0)
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean()).fillna(8.0)
 
-# 騎手別勝率
-jockey_stats = df.groupby('騎手')['target_win'].mean().to_dict()
-df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
-
-# 指数計算
+# 同距離適性 & カスタム指数
+df['same_dist_avg_rank'] = df.groupby(['馬名_clean', 'distance_num'])['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean()).fillna(df['recent_avg_rank'])
 df['custom_time_index'] = 75.0 - (df['recent_avg_rank'].clip(1, 14) - 3.0) * 3.5 + (df['斤量'] - 54.0) * 1.5
 df['custom_start_index'] = (12.0 - df['prev_1c'].clip(upper=10.0)) * 6.5
 
-# 💡 フルスペック特徴量リスト
+# 単騎逃げ判定
+df['is_nige_candidate'] = (df['prev_1c'] <= 2.5).astype(int)
+nige_counts = df.groupby('race_id')['is_nige_candidate'].transform('sum')
+df['single_escape_flag'] = np.where((df['is_nige_candidate'] == 1) & (nige_counts == 1), 1, 0)
+
+# 騎手勝率
+jockey_stats = (df[df['target_rank'] == 1.0].groupby('騎手')['target_rank'].count() / df.groupby('騎手')['target_rank'].count()).to_dict()
+df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
+
+# 💡 全15項目のフルスペック特徴量リスト
 features = [
-    'recent_avg_rank', 'prev_1c', 'custom_time_index', 'custom_start_index',
+    'recent_avg_rank', 'same_dist_avg_rank', 'prev_1c', 
+    'custom_time_index', 'custom_start_index', 'single_escape_flag',
     '斤量', 'sex_code', 'age', 'body_weight', 'body_weight_diff',
     'kinryo_weight_ratio', 'jockey_win_rate', 'distance_num', '馬番_num'
 ]
 
+# LGBMRankerグループ構築
+df = df.sort_values('race_id').reset_index(drop=True)
+groups = df.groupby('race_id').size().values
+
 X = df[features].fillna(0)
-y_win = df['target_win']
-y_place = df['target_place']
+y = df['relevance']
 
-print(f"🧠 使用する特徴量 ({len(features)}項目):", features)
+print(f"🧠 学習実行中 (LGBMRanker / 対象: {len(groups):,} レース / 特徴量: {len(features)}項目)...")
 
-print("🔥 【複眼モデル1】1着突破力（頭用AI）を学習中...")
-model_win = lgb.LGBMClassifier(
-    n_estimators=150,
+ranker = lgb.LGBMRanker(
+    n_estimators=200,
     learning_rate=0.03,
     num_leaves=31,
     random_state=42
 )
-model_win.fit(X, y_win)
+ranker.fit(X, y, group=groups)
 
-print("🔥 【複眼モデル2】2・3着粘り込み力（紐用AI）を学習中...")
-model_place = lgb.LGBMClassifier(
-    n_estimators=150,
-    learning_rate=0.03,
-    num_leaves=31,
-    random_state=42
-)
-model_place.fit(X, y_place)
-
-# モデルの保存
 joblib.dump({
-    'model_win': model_win,
-    'model_place': model_place,
-    'model': model_win, # 後方互換用
+    'ranker_model': ranker,
+    'model': ranker, # 互換用
     'features': features
 }, MODEL_FILE)
 
-print("✨ フルスペック複眼AIモデル（`keiba_ai_model_nar.pkl`）の再学習と保存が完了しました！")
+print("✨ フルスペック×LGBMRankerモデル（`keiba_ai_model_nar.pkl`）の作成が完了しました！")
