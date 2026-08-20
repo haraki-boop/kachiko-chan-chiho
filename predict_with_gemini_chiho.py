@@ -37,7 +37,7 @@ st.markdown("""
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; }
-    .badge-alert { background: linear-gradient(135deg, #e1b12c, #fbc531); color: #000 !important; font-weight: 900; padding: 3px 8px; border-radius: 6px; animation: blink 1.5s infinite; }
+    .badge-alert { background: linear-gradient(135deg, #e1b12c, #fbc531); color: #000 !important; font-weight: 900; padding: 3px 8px; border-radius: 6px; }
     .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
 </style>
 """, unsafe_allow_html=True)
@@ -60,32 +60,26 @@ TRACK_BIAS = {"浦和": {"逃": 1.25, "先": 1.15, "差": 0.80, "追": 0.70}, "�
 def clean_horse_name(name): 
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
-# 💡【修正】文字化け回避つきCSV読込関数
-def load_csv_utf8(path, dtype_dict=None):
+# 💡 CSV読み込み（utf-8-sig優先で文字化けを確実に防止）
+def load_csv_safe(path, dtype_dict=None):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
-    for enc in ['utf-8-sig', 'cp932', 'shift_jis', 'utf-8']:
+    for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift_jis']:
         try:
             df = pd.read_csv(path, dtype=dtype_dict, encoding=enc)
-            str_cols = df.select_dtypes(include=['object']).columns
-            if len(str_cols) > 0:
-                sample_text = "".join(df[str_cols].head(10).fillna('').astype(str).values.flatten())
-                if '' in sample_text:
-                    continue
-            return df
+            if not df.empty:
+                return df
         except Exception:
             continue
-    try:
-        return pd.read_csv(path, dtype=dtype_dict, encoding='cp932', errors='replace')
-    except:
-        return pd.DataFrame()
+    return pd.DataFrame()
 
 @st.cache_resource
-def load_model(): return joblib.load(MODEL_FILE) if os.path.exists(MODEL_FILE) else None
+def load_model(): 
+    return joblib.load(MODEL_FILE) if os.path.exists(MODEL_FILE) else None
 
-df_past = load_csv_utf8(ML_TARGET_CSV, {'race_id': str})
-df_future = load_csv_utf8(FUTURE_CSV, {'race_id': str, '馬番': str})
-df_history = load_csv_utf8(HISTORY_CSV, {'race_id': str})
+df_past = load_csv_safe(ML_TARGET_CSV, {'race_id': str})
+df_future = load_csv_safe(FUTURE_CSV, {'race_id': str, '馬番': str})
+df_history = load_csv_safe(HISTORY_CSV, {'race_id': str})
 
 if not df_past.empty:
     def _parse_rank(x):
@@ -102,9 +96,9 @@ if not df_past.empty:
         df_past['target_win'] = (df_past['target_rank'] == 1.0).astype(int)
 
 if not df_future.empty and 'race_id' in df_future.columns:
-    df_future['place_code'] = df_future['race_id'].str[4:6]
+    df_future['place_code'] = df_future['race_id'].astype(str).str[4:6]
     df_future['place_name'] = df_future['place_code'].map(NAR_PLACES).fillna("地方")
-    df_future['r_num'] = df_future['race_id'].str[10:12].astype(int)
+    df_future['r_num'] = df_future['race_id'].astype(str).str[10:12].astype(int)
     df_future['day_label'] = df_future['date'] if 'date' in df_future.columns else datetime.now().strftime("%Y-%m-%d")
 
 model_data = load_model()
@@ -114,7 +108,8 @@ def build_past_dicts(df_p):
     jockey_dict, horse_dict = {}, {}
     if not df_p.empty:
         if 'target_win' in df_p.columns:
-            for j, row in df_p.groupby('騎手')['target_win'].agg(['count', 'mean']).iterrows(): jockey_dict[j] = {'j_runs': row['count'], 'j_win_rate': row['mean']}
+            for j, row in df_p.groupby('騎手')['target_win'].agg(['count', 'mean']).iterrows(): 
+                jockey_dict[j] = {'j_runs': row['count'], 'j_win_rate': row['mean']}
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
         for h, group in df_p.sort_values('date' if 'date' in df_p.columns else 'race_id').groupby('馬名_clean'):
             r3 = group.tail(3)
@@ -127,7 +122,9 @@ def build_past_dicts(df_p):
     return jockey_dict, horse_dict
 
 jockey_dict, horse_dict = build_past_dicts(df_past)
-def get_kyakushitsu(fc): return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
+
+def get_kyakushitsu(fc): 
+    return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
 
 def parse_sex_age(val):
     if pd.isna(val): return 0, 4.0
@@ -148,7 +145,7 @@ def parse_weight_info(val):
     return 470.0, 0.0
 
 # ==========================================
-# 3. AIスコア ＆ ピュア勝率算出（数十項目・優先評価搭載）
+# 3. AIスコア ＆ ピュア勝率算出
 # ==========================================
 def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     if target_df.empty: return None
@@ -213,16 +210,11 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         try:
             m_win = model_data.get('model_win', model_data.get('model'))
             X = race_df[model_data['features']].fillna(0.0)
-            if hasattr(m_win, "predict_proba"):
-                preds = m_win.predict_proba(X)[:, 1]
-            else:
-                preds = m_win.predict(X)
+            preds = m_win.predict_proba(X)[:, 1] if hasattr(m_win, "predict_proba") else m_win.predict(X)
             
             p_min, p_max = preds.min(), preds.max()
             if p_max > p_min:
                 ai_prob = (preds - p_min) / (p_max - p_min)
-            else:
-                ai_prob = np.zeros(len(race_df))
         except: pass
 
     time_rank_norm = (race_df['custom_time_index'] - race_df['custom_time_index'].min()) / (race_df['custom_time_index'].max() - race_df['custom_time_index'].min() + 1e-5)
@@ -253,7 +245,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     return race_df.sort_values(by=['score_brain1', 'recent_avg_rank'], ascending=[False, True]).reset_index(drop=True)
 
 # ==========================================
-# 4. UI ＆ テーブル
+# 4. UI ＆ テーブル描画
 # ==========================================
 st.sidebar.header("🔄 画面の更新")
 api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
@@ -315,7 +307,8 @@ def generate_beautiful_table(disp_df):
 tab_forecast, tab_dashboard = st.tabs(["🏇 レース予想 (完全版)", "📈 地方実戦成績"])
 
 with tab_forecast:
-    if df_future.empty: st.warning("⚠️ 本日の出馬表データが存在しません。")
+    if df_future.empty: 
+        st.warning("⚠️ 出馬表データ（future_races_chiho.csv）が存在しないか、空です。")
     else:
         st.markdown("<div class='section-header'>🎯 予想レースを選択</div>", unsafe_allow_html=True)
         sel_date = st.radio("開催日", sorted(df_future['day_label'].unique()), horizontal=True, label_visibility="collapsed")
@@ -341,7 +334,9 @@ with tab_forecast:
         st.markdown(f"<h2>🚀 {race_display_name}</h2>", unsafe_allow_html=True)
         
         cond = st.radio("🌧️ 現在の馬場状態を選択してください", ["良", "稍重", "重", "不良"], horizontal=True, index=["良", "稍重", "重", "不良"].index(st.session_state['baba_status']))
-        if cond != st.session_state['baba_status']: st.session_state['baba_status'] = cond; st.rerun()
+        if cond != st.session_state['baba_status']: 
+            st.session_state['baba_status'] = cond
+            st.rerun()
         
         scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
@@ -350,7 +345,9 @@ with tab_forecast:
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         if st.button("🎀 Geminiで【3連複6点＆3連単8点フォーメーション】を予想", type="primary", use_container_width=True):
-            if not api_key_input: st.error("【設定エラー】APIキーが見つかりません。"); st.stop()
+            if not api_key_input: 
+                st.error("【設定エラー】APIキーが見つかりません。")
+                st.stop()
 
             table_summary = []
             for idx, row in scored_df.iterrows():
@@ -386,7 +383,7 @@ with tab_forecast:
   * 2着: ◎, ◯, ▲
   * 3着: ◯, ▲, △1, △2
 ---"""
-            with st.spinner("🎀 馬体重・優先フラグから最強フォーメーション生成中..."):
+            with st.spinner("🎀 最強フォーメーション生成中..."):
                 try:
                     res_text = genai.Client(api_key=api_key_input).models.generate_content(
                         model='gemini-2.5-flash',
@@ -394,7 +391,8 @@ with tab_forecast:
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.3)
                     ).text
                     st.markdown(f"<div class='gemini-output-box'>{res_text}</div>", unsafe_allow_html=True)
-                except Exception as e: st.error(f"エラー: {e}")
+                except Exception as e: 
+                    st.error(f"エラー: {e}")
 
 with tab_dashboard:
     st.markdown("<div class='section-header'>📈 地方実戦成績ダッシュボード</div>", unsafe_allow_html=True)

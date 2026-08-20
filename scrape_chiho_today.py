@@ -39,9 +39,10 @@ def get_today_chiho_races():
             
             try:
                 res = requests.get(url, headers=headers, timeout=8)
-                res.encoding = 'euc-jp'
+                # 💡【修正点】netkeibaの文字コードを正しい Shift_JIS (cp932) に修正！
+                res.encoding = 'cp932'
                 
-                # 💡 ページ内に「RaceName」か「Shutuba_Table」がなければ開催なしと判定
+                # ページ内に「RaceName」か「Shutuba_Table」がなければ開催なしと判定
                 if res.status_code != 200 or ("RaceName" not in res.text and "Shutuba_Table" not in res.text):
                     if r_num == 1:
                         break
@@ -50,7 +51,7 @@ def get_today_chiho_races():
 
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
-                # テーブルを幅広く探す
+                # テーブルを探す
                 table = soup.find("table", class_=re.compile("RaceTable01|Shutuba_Table", re.I))
                 if not table:
                     if r_num == 1: break
@@ -69,15 +70,12 @@ def get_today_chiho_races():
                     dist_match = re.search(r'(\d{3,4})m', data_intro.text)
                     if dist_match: distance = int(dist_match.group(1))
 
-                # 💡 クラス名に依存せず、すべての <tr> を取得して中身で判定する
                 rows = table.find_all("tr")
                 for row in rows:
                     cols = row.find_all("td")
-                    # netkeibaの出馬表はtdが多数ある。少ない行はヘッダー等なので無視
                     if len(cols) < 7: continue
                     
                     umaban = clean_text(cols[1].text)
-                    # 💡 馬番の列に「数字」が入っている行だけを「馬のデータ」として抽出する最強のロジック
                     if not umaban.isdigit(): continue 
                     
                     horse_name = clean_text(cols[3].text)
@@ -85,7 +83,6 @@ def get_today_chiho_races():
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
                     
-                    # 馬体重は列の後ろの方にある
                     horse_weight = clean_text(cols[8].text) if len(cols) > 8 else ""
                     
                     odds_td = row.find("td", id=re.compile(r'odds-', re.I))
@@ -112,6 +109,7 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         csv_path = "future_races_chiho.csv"
+        # 💡 UTF-8 (BOM付き) で文字化けしないCSVを生成
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
         print(f"✨ 成功: {len(df)} 件の最新馬データを取得し、{csv_path} に保存しました！")
         
