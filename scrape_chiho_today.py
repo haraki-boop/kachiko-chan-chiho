@@ -5,7 +5,6 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 import os
-import subprocess
 
 NAR_PLACES = {
     "30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋",
@@ -17,6 +16,11 @@ def clean_text(text):
     if not text: return ""
     return re.sub(r'[\s\u3000]+', '', str(text)).strip()
 
+def extract_horse_weight(text):
+    # 馬体重の「450(+2)」または「450」形式だけを厳格に抽出
+    m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(text))
+    return m.group(0) if m else ""
+
 def get_today_chiho_races():
     JST = timezone(timedelta(hours=+9), 'JST')
     today_dt = datetime.now(JST)
@@ -25,10 +29,7 @@ def get_today_chiho_races():
     mmdd = today_dt.strftime("%m%d")
     
     print(f"🌸 今日の地方競馬データを取得中... ({date_str})")
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     all_races = []
 
     for place_code, place_name in NAR_PLACES.items():
@@ -43,9 +44,7 @@ def get_today_chiho_races():
                     if r_num == 1: break
                     else: continue
 
-                # 💡 生バイトデータ(res.content)をそのまま渡して文字コードを自動判別（二重化け防止）
                 soup = BeautifulSoup(res.content, 'html.parser')
-                
                 table = soup.find("table", class_=re.compile("RaceTable01|Shutuba_Table", re.I))
                 if not table:
                     if r_num == 1: break
@@ -76,7 +75,10 @@ def get_today_chiho_races():
                     sei_rei = clean_text(cols[4].text)
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
-                    horse_weight = clean_text(cols[8].text) if len(cols) > 8 else ""
+                    
+                    # 💡 馬体重のみを抽出
+                    raw_weight = clean_text(cols[8].text) if len(cols) > 8 else ""
+                    horse_weight = extract_horse_weight(raw_weight)
                     
                     odds_td = row.find("td", id=re.compile(r'odds-', re.I))
                     odds = clean_text(odds_td.text) if odds_td else "15.0"
@@ -101,9 +103,5 @@ def get_today_chiho_races():
 if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
-        csv_path = "future_races_chiho.csv"
-        # UTF-8 (BOM付き) で保存
-        df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件の正常な馬データを取得し保存しました！")
-    else:
-        print("⚠️ 地方競馬データが取得できませんでした。")
+        df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
+        print(f"✨ 成功: {len(df)} 件のデータを正常化して保存しました！")

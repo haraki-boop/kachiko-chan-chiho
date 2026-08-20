@@ -60,13 +60,19 @@ TRACK_BIAS = {"浦和": {"逃": 1.25, "先": 1.15, "差": 0.80, "追": 0.70}, "�
 def clean_horse_name(name): 
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
-# 💡 二重化けを起こさない確定CSV読み込み処理
+def format_weight_display(val):
+    if pd.isna(val) or not str(val).strip(): return "-"
+    m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
+    return m.group(0) if m else str(val)
+
 def load_csv_safe(path, dtype_dict=None):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
-    for enc in ['utf-8-sig', 'utf-8', 'cp932']:
+    for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift_jis']:
         try:
-            return pd.read_csv(path, dtype=dtype_dict, encoding=enc)
+            df = pd.read_csv(path, dtype=dtype_dict, encoding=enc)
+            if not df.empty:
+                return df
         except Exception:
             continue
     return pd.DataFrame()
@@ -135,7 +141,7 @@ def parse_sex_age(val):
 def parse_weight_info(val):
     if pd.isna(val): return 470.0, 0.0
     s = str(val).strip()
-    m = re.match(r'(\d+)(?:\(([-+]?\d+)\))?', s)
+    m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s)
     if m:
         w = float(m.group(1))
         diff = float(m.group(2)) if m.group(2) else 0.0
@@ -279,7 +285,7 @@ def generate_beautiful_table(disp_df):
         abnormal = "<span class='badge-alert'>🚨大口</span>" if r.get('is_abnormal', False) else "-"
         ev_style = "color:#e74c3c !important; font-weight:900;" if r['ev_brain2'] >= 1.0 else "color:#5a3d46;"
         
-        weight_str = r.get('馬体重', '-')
+        weight_str = format_weight_display(r.get('馬体重', '-'))
         
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
@@ -351,14 +357,14 @@ with tab_forecast:
             for idx, row in scored_df.iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
+                    clean_w = format_weight_display(row.get('馬体重', ''))
                     table_summary.append(
-                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 馬体重:{row.get('馬体重','')} | 脚質:{row['脚質']} | "
-                        f"優先フラグ:{row.get('first_corner_rank',99)<=2} (テン速) / {row.get('jockey_win_rate',0)>=0.15} (凄腕騎手) | "
-                        f"オッズ:{row['単勝_num']}倍 (適正:{row.get('expected_odds',0)}倍) | 期待値:{row['ev_brain2']:.2f} | 異常投票:{'あり' if row.get('is_abnormal') else 'なし'}"
+                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 馬体重:{clean_w} | 脚質:{row['脚質']} | "
+                        f"オッズ:{row['単勝_num']}倍 | 期待値:{row['ev_brain2']:.2f}"
                     )
 
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
-競馬場は「{info['place_name']}」、馬場状態は「{st.session_state['baba_status']}」。
+競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
 バックテストで最も高い投資効果が証明された【Cプラン（2本柱）】の買い目を案内してください。
 
 【出力フォーマット】
@@ -383,12 +389,14 @@ with tab_forecast:
 ---"""
             with st.spinner("🎀 最強フォーメーション生成中..."):
                 try:
-                    res_text = genai.Client(api_key=api_key_input).models.generate_content(
+                    # 💡 Client切断エラーを防ぐためリクエスト時に即時作成
+                    ai_client = genai.Client(api_key=api_key_input)
+                    response = ai_client.models.generate_content(
                         model='gemini-2.5-flash',
                         contents=f"対象レース: {sel_date} {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.3)
-                    ).text
-                    st.markdown(f"<div class='gemini-output-box'>{res_text}</div>", unsafe_allow_html=True)
+                    )
+                    st.markdown(f"<div class='gemini-output-box'>{response.text}</div>", unsafe_allow_html=True)
                 except Exception as e: 
                     st.error(f"エラー: {e}")
 
