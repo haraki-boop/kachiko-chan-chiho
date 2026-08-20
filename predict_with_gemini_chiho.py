@@ -60,15 +60,13 @@ TRACK_BIAS = {"浦和": {"逃": 1.25, "先": 1.15, "差": 0.80, "追": 0.70}, "�
 def clean_horse_name(name): 
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
-# 💡 CSV読み込み（utf-8-sig優先で文字化けを確実に防止）
+# 💡 二重化けを起こさない確定CSV読み込み処理
 def load_csv_safe(path, dtype_dict=None):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
-    for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift_jis']:
+    for enc in ['utf-8-sig', 'utf-8', 'cp932']:
         try:
-            df = pd.read_csv(path, dtype=dtype_dict, encoding=enc)
-            if not df.empty:
-                return df
+            return pd.read_csv(path, dtype=dtype_dict, encoding=enc)
         except Exception:
             continue
     return pd.DataFrame()

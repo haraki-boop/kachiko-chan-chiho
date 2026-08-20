@@ -39,19 +39,13 @@ def get_today_chiho_races():
             
             try:
                 res = requests.get(url, headers=headers, timeout=8)
-                # 💡【修正点】netkeibaの文字コードを正しい Shift_JIS (cp932) に修正！
-                res.encoding = 'cp932'
-                
-                # ページ内に「RaceName」か「Shutuba_Table」がなければ開催なしと判定
-                if res.status_code != 200 or ("RaceName" not in res.text and "Shutuba_Table" not in res.text):
-                    if r_num == 1:
-                        break
-                    else:
-                        continue
+                if res.status_code != 200:
+                    if r_num == 1: break
+                    else: continue
 
-                soup = BeautifulSoup(res.text, 'html.parser')
+                # 💡 生バイトデータ(res.content)をそのまま渡して文字コードを自動判別（二重化け防止）
+                soup = BeautifulSoup(res.content, 'html.parser')
                 
-                # テーブルを探す
                 table = soup.find("table", class_=re.compile("RaceTable01|Shutuba_Table", re.I))
                 if not table:
                     if r_num == 1: break
@@ -82,12 +76,11 @@ def get_today_chiho_races():
                     sei_rei = clean_text(cols[4].text)
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
-                    
                     horse_weight = clean_text(cols[8].text) if len(cols) > 8 else ""
                     
                     odds_td = row.find("td", id=re.compile(r'odds-', re.I))
                     odds = clean_text(odds_td.text) if odds_td else "15.0"
-                    if odds == "---" or odds == "": odds = "15.0"
+                    if odds in ["---", "", "0.0"]: odds = "15.0"
                     
                     pop_td = row.find("td", id=re.compile(r'pop-', re.I))
                     pop = clean_text(pop_td.text) if pop_td else "99"
@@ -99,8 +92,8 @@ def get_today_chiho_races():
                         "斤量": kinryo, "騎手": jockey, "馬体重": horse_weight,
                         "単勝": odds, "人気": pop
                     })
-                time.sleep(0.3)
-            except Exception as e:
+                time.sleep(0.2)
+            except Exception:
                 continue
 
     return pd.DataFrame(all_races)
@@ -109,17 +102,8 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         csv_path = "future_races_chiho.csv"
-        # 💡 UTF-8 (BOM付き) で文字化けしないCSVを生成
+        # UTF-8 (BOM付き) で保存
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件の最新馬データを取得し、{csv_path} に保存しました！")
-        
-        print("🚀 GitHubへ自動送信中...")
-        try:
-            subprocess.run(["git", "add", "future_races_chiho.csv"], check=True)
-            subprocess.run(["git", "commit", "-m", "update: rich future races data"], check=True)
-            subprocess.run(["git", "push", "origin", "main"], check=True)
-            print("🎉 クラウドへの同期が完了しました！")
-        except Exception as e:
-            print(f"⚠️ Git送信エラー: {e}")
+        print(f"✨ 成功: {len(df)} 件の正常な馬データを取得し保存しました！")
     else:
-        print("⚠️ 地方競馬データが取得できませんでした（開催なし等の可能性）。")
+        print("⚠️ 地方競馬データが取得できませんでした。")
