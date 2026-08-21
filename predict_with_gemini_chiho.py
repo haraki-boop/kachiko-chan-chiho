@@ -305,7 +305,14 @@ def generate_beautiful_table(disp_df):
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
         abnormal = "<span class='badge-alert'>🚨大口</span>" if r.get('is_abnormal', False) else "-"
-        weight_str = format_weight_display(r.get('馬体重', '-'))
+        
+        # 🆕 馬体重が発表前なら「前走の体重」をグレーで表示
+        actual_w = str(r.get('馬体重', '-')).strip()
+        if actual_w in ["", "-", "nan", "NaN", "None"]:
+            body_w = int(r.get('body_weight', 470))
+            weight_str = f"<span style='color:#aaa; font-size:0.9em;'>{body_w}<br>(前走)</span>"
+        else:
+            weight_str = f"<b>{format_weight_display(actual_w)}</b>"
         
         flags = []
         if r.get('single_escape_flag', 0) == 1: flags.append("<span style='color:#e74c3c; font-size:0.85em; font-weight:bold;'>[🔥] 独走逃げ</span>")
@@ -320,7 +327,7 @@ def generate_beautiful_table(disp_df):
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
 <td style='text-align:left; font-weight:800; color:#5a3d46 !important;'>{r.get('馬名', '-')}</td>
-<td style='color:#666666 !important;'>{weight_str}</td>
+<td>{weight_str}</td>
 <td style='line-height:1.3;'>{flag_str}</td>
 <td style='color:#666666 !important;'>{r.get('騎手', '-')}</td>
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
@@ -378,7 +385,6 @@ with tab_forecast:
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
 
-            # レース波乱度・スコア差の自動判定
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
             s2 = scores[1] if len(scores) > 1 else 40
@@ -387,7 +393,6 @@ with tab_forecast:
             diff1_2 = s1 - s2
             diff2_3 = s2 - s3
 
-            # 最適買い目パターンの決定
             if diff1_2 >= 15:
                 rec_pattern_name = "【軸1頭固定・軸信頼】3連単 黄金フォーメーション (8点)"
                 rec_detail = "* **1着:** ◎ (1頭固定)\n* **2着:** ◎, ◯, ▲ (3頭指定)\n* **3着:** ◎, ◯, ▲, △1, △2, △3 (6頭指定)\n*(※1着◎固定によりマークシート指定で実質8点買いとなり、バックテスト的中率は 39.4% に到達します)*"
