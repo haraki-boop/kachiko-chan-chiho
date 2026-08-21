@@ -28,6 +28,17 @@ def scrape_race_result(race_id, date_str):
         res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, "html.parser")
         
+        # 距離と馬場状態の取得
+        race_data_div = soup.find("div", class_=re.compile("RaceData01", re.I))
+        distance = 1400
+        baba = "良"
+        if race_data_div:
+            rd_text = clean_text(race_data_div.text)
+            dist_m = re.search(r'([0-9]{4})m', rd_text)
+            if dist_m: distance = int(dist_m.group(1))
+            baba_m = re.search(r'馬場:([^\s]+)', race_data_div.text)
+            if baba_m: baba = clean_text(baba_m.group(1))
+
         table = soup.find("table", class_=re.compile("RaceTable01", re.I))
         if not table: return None
             
@@ -41,27 +52,37 @@ def scrape_race_result(race_id, date_str):
                 if not rank_str.isdigit(): continue
                 rank = int(rank_str)
                 
+                waku = clean_text(tds[1].text) if len(tds) > 1 else ""
                 umaban = clean_text(tds[2].text)
                 horse_name = clean_text(tds[3].text)
                 sei_rei = clean_text(tds[4].text)
                 weight = float(re.search(r'([0-9\.]+)', clean_text(tds[5].text)).group(1))
                 jockey = clean_text(tds[6].text)
                 
-                horse_weight = clean_text(tds[14].text) if len(tds) > 14 else ""
+                time_diff_raw = clean_text(tds[8].text) if len(tds) > 8 else ""
+                time_diff = float(time_diff_raw) if time_diff_raw.replace('.','',1).isdigit() else (0.0 if rank == 1 else 1.5)
                 
                 passage = clean_text(tds[10].text)
                 first_corner = float(passage.split('-')[0]) if '-' in passage and passage.split('-')[0].isdigit() else 8.0
                 
+                last_3f_raw = clean_text(tds[11].text) if len(tds) > 11 else ""
+                last_3f = float(last_3f_raw) if last_3f_raw.replace('.','',1).isdigit() else 39.0
+
                 odds = float(clean_text(tds[12].text)) if clean_text(tds[12].text).replace('.','',1).isdigit() else 15.0
                 pop = int(clean_text(tds[13].text)) if clean_text(tds[13].text).isdigit() else 99
+                horse_weight = clean_text(tds[14].text) if len(tds) > 14 else ""
+                trainer = clean_text(tds[18].text) if len(tds) > 18 else ""
                 
                 target_win = 1 if rank == 1 else 0
                 
                 rows.append({
                     "date": date_str, "race_id": race_id, "馬名": horse_name,
                     "性齢": sei_rei, "単勝": odds, "人気": pop, "斤量": weight,
-                    "馬番": umaban, "騎手": jockey, "馬体重": horse_weight,
-                    "first_corner": first_corner, "target_rank": rank, "target_win": target_win
+                    "枠番": waku, "馬番": umaban, "騎手": jockey, "調教師": trainer, 
+                    "馬体重": horse_weight, "first_corner": first_corner,
+                    "last_3f": last_3f, "time_diff": time_diff, 
+                    "distance": distance, "馬場": baba,
+                    "target_rank": rank, "target_win": target_win
                 })
             except Exception:
                 continue
