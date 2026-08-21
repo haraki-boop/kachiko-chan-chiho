@@ -41,7 +41,7 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (全29特徴量・純粋能力モデル)")
+with col2: st.title("AI予想 勝ち子ちゃん (純粋能力 ＋ 注目フラグ表示)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
@@ -53,8 +53,10 @@ NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "4
 def clean_horse_name(name): 
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
+# 💡 当日の馬体重が未発表の場合はシンプルに「-」を表示
 def format_weight_display(val):
-    if pd.isna(val) or not str(val).strip(): return "-"
+    if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-":
+        return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
 
@@ -118,8 +120,6 @@ def build_past_dicts(df_p):
     jockey_dict, trainer_dict, combo_dict, horse_dict, waku_place_dict = {}, {}, {}, {}, {}
     if not df_p.empty:
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
-        
-        # 💡 列がない場合に備えた安全なパース
         df_p['first_corner'] = pd.to_numeric(df_p['first_corner'], errors='coerce') if 'first_corner' in df_p.columns else np.nan
         df_p['last_3f'] = pd.to_numeric(df_p['last_3f'] if 'last_3f' in df_p.columns else df_p.get('上り'), errors='coerce')
         df_p['time_diff'] = pd.to_numeric(df_p['time_diff'] if 'time_diff' in df_p.columns else df_p.get('着差'), errors='coerce').fillna(1.5)
@@ -154,10 +154,15 @@ def build_past_dicts(df_p):
 
             bad_group = group[group['is_bad_baba'] == 1]
             bad_avg = bad_group.tail(3)['target_rank'].mean() if len(bad_group) > 0 else r3.get('target_rank', pd.Series([6.0])).mean()
+            
+            last_weight = 470.0
+            if '馬体重' in last_row and pd.notna(last_row['馬体重']):
+                w_match = re.search(r'(\d{3})', str(last_row['馬体重']))
+                if w_match: last_weight = float(w_match.group(1))
 
             horse_dict[h] = {
                 'prev_dist': last_row.get('distance_num', 1400),
-                'prev_weight': pd.to_numeric(last_row.get('斤量'), errors='coerce') if '斤量' in last_row else 54.0,
+                'prev_weight': last_weight,
                 'prev_1c': pd.to_numeric(r3.get('first_corner', pd.Series([8.0])), errors='coerce').fillna(8.0).mean(),
                 'last_3f_avg_rank': pd.to_numeric(r3.get('last_3f', pd.Series([39.0])), errors='coerce').fillna(39.0).mean(),
                 'avg_time_diff': pd.to_numeric(r3.get('time_diff', pd.Series([1.5])), errors='coerce').fillna(1.5).mean(),
@@ -189,7 +194,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['baba_code'] = baba_map.get(baba_status, 1)
     race_df['is_bad_baba'] = (race_df['baba_code'] >= 3).astype(int)
 
-    # 💡 出馬表に列が存在しない場合のクラッシュを防ぐ安全なパース
     race_df['単勝_num'] = pd.to_numeric(race_df['単勝'], errors='coerce').fillna(15.0) if '単勝' in race_df.columns else 15.0
     race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
     race_df['斤量'] = pd.to_numeric(race_df['斤量'], errors='coerce').fillna(54.0) if '斤量' in race_df.columns else 54.0
@@ -203,16 +207,22 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         race_df['sex_code'], race_df['age'] = [x[0] for x in parsed_sa], [x[1] for x in parsed_sa]
     else: race_df['sex_code'], race_df['age'] = 0, 4.0
 
+    # 馬体重が取得できていない場合は一旦前走体重を埋める（AI特徴量用）
+    race_df['prev_weight'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_weight', 470.0))
+    
     if '馬体重' in race_df.columns:
         parsed_w = race_df['馬体重'].apply(parse_weight_info)
         race_df['body_weight'], race_df['body_weight_diff'] = [x[0] for x in parsed_w], [x[1] for x in parsed_w]
-    else: race_df['body_weight'], race_df['body_weight_diff'] = 470.0, 0.0
+        # 空っぽだった場合は前走体重で補完
+        race_df.loc[race_df['body_weight'] == 470.0, 'body_weight'] = race_df['prev_weight']
+    else: 
+        race_df['body_weight'] = race_df['prev_weight']
+        race_df['body_weight_diff'] = 0.0
 
     race_df['kinryo_weight_ratio'] = race_df['斤量'] / race_df['body_weight'].clip(lower=350.0)
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
     race_df['prev_dist'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_dist', 1400))
-    race_df['prev_weight'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_weight', 54.0))
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_1c', 6.0))
     race_df['prev_1c'] = race_df['first_corner']
     race_df['last_3f_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f_avg_rank', 39.0))
@@ -241,7 +251,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(20.0, 99.0).round(1)
     race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(20.0, 99.0).round(1)
 
-    # 🧠 全29特徴量による純粋AI推論
+    # 💡 UI用の注目フラグ算出（AIスコアには影響させない純粋表示用）
+    race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
+    race_df['is_nige_candidate'] = (race_df['prev_1c'] <= 2.5).astype(int)
+    nige_count = race_df['is_nige_candidate'].sum()
+    race_df['single_escape_flag'] = np.where((race_df['is_nige_candidate'] == 1) & (nige_count == 1), 1, 0)
+
+    # 🧠 全29特徴量による純粋AI推論（加点なし！）
     race_df['place_prob'] = 0.3
     race_df['win_prob'] = 0.1
     
@@ -287,7 +303,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手</th><th>脚質</th><th>純粋AI能力</th><th>3着内率</th><th>1着率</th><th>単勝オッズ</th><th>適正オッズ</th><th>異常</th><th>印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>注目フラグ</th><th>騎手</th><th>脚質</th><th>純粋AI能力</th><th>3着内率</th><th>1着率</th><th>単勝オッズ</th><th>異常</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
@@ -296,19 +312,29 @@ def generate_beautiful_table(disp_df):
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
         abnormal = "<span class='badge-alert'>🚨大口</span>" if r.get('is_abnormal', False) else "-"
+        # 💡 シンプルになった馬体重表示
         weight_str = format_weight_display(r.get('馬体重', '-'))
         
+        # 💡 UI表示用の注目フラグ
+        flags = []
+        if r.get('single_escape_flag', 0) == 1: flags.append("<span style='color:#e74c3c; font-size:0.85em; font-weight:bold;'>[🔥] 独走逃げ</span>")
+        elif r.get('first_corner_rank', 99) <= 2: flags.append("<span style='color:#e67e22; font-size:0.85em; font-weight:bold;'>[⚡] テン速</span>")
+        if r.get('jockey_win_rate', 0) >= 0.15: flags.append("<span style='color:#8e44ad; font-size:0.85em; font-weight:bold;'>[👑] 凄腕</span>")
+        if r.get('trainer_win_rate', 0) >= 0.15: flags.append("<span style='color:#2980b9; font-size:0.85em; font-weight:bold;'>[🏢] 名門</span>")
+        if r.get('distance_num', 0) < r.get('prev_dist', 0): flags.append("<span style='color:#27ae60; font-size:0.85em; font-weight:bold;'>[縮] 距短</span>")
+        flag_str = "<br>".join(flags) if flags else "-"
+
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
 <td style='text-align:left; font-weight:800; color:#5a3d46 !important;'>{r.get('馬名', '-')}</td>
 <td style='color:#666666 !important;'>{weight_str}</td>
+<td style='line-height:1.3;'>{flag_str}</td>
 <td style='color:#666666 !important;'>{r.get('騎手', '-')}</td>
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_brain1'])}点</b></td>
 <td style='color:#c94a65 !important;'><b>{r['place_prob']*100:.1f}%</b></td>
 <td style='color:#666666 !important;'>{r['win_prob']*100:.1f}%</td>
 <td style='color:#666666 !important;'>{r['単勝_num']:.1f}倍</td>
-<td style='color:#bdc3c7 !important; font-size:0.9em;'>{r.get('expected_odds', 0)}倍</td>
 <td>{abnormal}</td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
 </tr>"""
@@ -363,7 +389,6 @@ with tab_forecast:
             for idx, row in scored_df.iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
-                    clean_w = format_weight_display(row.get('馬体重', ''))
                     table_summary.append(
                         f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AI能力スコア:{row['score_brain1']} | 3着内率:{row['place_prob']*100:.1f}% | "
                         f"1着率:{row['win_prob']*100:.1f}% | オッズ:{row['単勝_num']}倍"
