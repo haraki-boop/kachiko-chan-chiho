@@ -4,7 +4,7 @@ import joblib
 import os
 import re
 
-print("🌸 勝ち子ちゃん バックテストツール (全29特徴量・3連単＆3連複対応版)")
+print("🌸 勝ち子ちゃん バックテストツール (全特徴量拡張・3連単＆3連複対応版)")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar.pkl"
@@ -31,7 +31,10 @@ df['target_rank'] = df['着順'].apply(parse_rank).fillna(6.0) if '着順' in df
 df = df[df['target_rank'] < 90.0].copy()
 
 # 1. 数値・文字データの安全なパース
-df['first_corner'] = pd.to_numeric(df.get('first_corner'), errors='coerce')
+df['first_corner'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
+df['last_corner'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner'])
+df['corner_diff'] = df['first_corner'] - df['last_corner']
+
 df['last_3f'] = pd.to_numeric(df.get('last_3f', df.get('上り')), errors='coerce')
 df['time_diff'] = pd.to_numeric(df.get('time_diff', df.get('着差')), errors='coerce').fillna(1.5)
 df['斤量'] = pd.to_numeric(df.get('斤量'), errors='coerce').fillna(54.0)
@@ -80,7 +83,7 @@ else: df['body_weight'], df['body_weight_diff'] = 470.0, 0.0
 df['kinryo_weight_ratio'] = df['斤量'] / df['body_weight'].clip(lower=350.0)
 df['is_large_weight_change'] = (df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-# 4. 全過去走・調教師・コンビ統計データ復元
+# 4. 全過去走・調教師・コンビ・馬主統計データ復元
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
@@ -104,34 +107,38 @@ df['custom_start_index'] = (12.0 - df['prev_1c'].fillna(8.0).clip(upper=10.0)) *
 
 trainer_col = '調教師' if '調教師' in df.columns else '騎手'
 df['trainer_clean'] = df[trainer_col].astype(str)
+df['owner_clean'] = df['馬主'].astype(str) if '馬主' in df.columns else ''
 df['jockey_trainer_combo'] = df['騎手'].astype(str) + "_" + df['trainer_clean']
 
 trainer_stats = (df[df['target_rank'] == 1.0].groupby('trainer_clean')['target_rank'].count() / df.groupby('trainer_clean')['target_rank'].count()).to_dict()
 combo_stats = (df[df['target_rank'] == 1.0].groupby('jockey_trainer_combo')['target_rank'].count() / df.groupby('jockey_trainer_combo')['target_rank'].count()).to_dict()
 jockey_stats = (df[df['target_rank'] == 1.0].groupby('騎手')['target_rank'].count() / df.groupby('騎手')['target_rank'].count()).to_dict()
+owner_stats = (df[df['target_rank'] == 1.0].groupby('owner_clean')['target_rank'].count() / df.groupby('owner_clean')['target_rank'].count()).to_dict() if '馬主' in df.columns else {}
 
 df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
 df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
 df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
+df['owner_win_rate'] = df['owner_clean'].map(owner_stats).fillna(0.05)
 
 waku_place_stats = (df[df['target_rank'] == 1.0].groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count() / df.groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count()).to_dict()
 df['waku_place_win_rate'] = df.set_index(['place_code', 'distance_num', 'waku_num']).index.map(waku_place_stats).fillna(0.10)
 
 # 5. AIモデル推論
 X = df[features].copy()
-X['place_code'] = X['place_code'].astype('category')
+if 'place_code' in X.columns:
+    X['place_code'] = X['place_code'].astype('category')
 
-print("🧠 全29特徴量でAI確率を計算中...")
+print("🧠 最新モデルでAI確率を計算中...")
 df['prob_win'] = model_win.predict_proba(X)[:, 1]
 df['prob_place'] = model_place.predict_proba(X)[:, 1]
 
-print("🏇 全レースシミュレーションを実行中...")
+print("🏇 全22,408レースのシミュレーションを実行中...")
 
 total_races = 0
 
 # 3連単
 hit_3tan_7pt = 0   # 7点
-hit_3tan_8pt = 0   # 8点 (Cプラン)
+hit_3tan_8pt = 0   # 8点
 hit_3tan_10pt = 0  # 10点
 hit_3tan_12pt = 0  # 12点
 
@@ -155,6 +162,7 @@ for race_id, group in df.groupby('race_id'):
     if (1.0 in {r1, r2} and 2.0 in {r1, r2}) and (3.0 in {r3, r4, r5, r6}):
         hit_3tan_7pt += 1
 
+    # 8点買い (1着:1位 / 2着:1~3位 / 3着:1~6位)
     if (1.0 in {r1, r2}) and (2.0 in {r1, r2, r3}) and (3.0 in {r2, r3, r4, r5}) and len({r1,r2,r3}) >= 2:
         hit_3tan_8pt += 1
 
@@ -165,16 +173,14 @@ for race_id, group in df.groupby('race_id'):
         hit_3tan_12pt += 1
 
     # --- 3連複 検証 ---
-    # 🆕 3連複 4頭BOX (4点): 上位4頭(r1~r4)の中に1着・2着・3着馬がすべて揃っているか
     if {1.0, 2.0, 3.0}.issubset({r1, r2, r3, r4}):
         hit_3fuku_4box += 1
 
-    # 🆕 3連複 1軸4頭流し (6点): r1(1位)が3着以内に入り、かつ相手4頭(r2~r5)に残り2頭が入っているか
     if (r1 in {1.0, 2.0, 3.0}) and {1.0, 2.0, 3.0}.issubset({r1, r2, r3, r4, r5}):
         hit_3fuku_1jiku4 += 1
 
 print("\n" + "="*60)
-print("🎯 全29特徴量モデル 的中率検証結果")
+print("🎯 地方競馬 全過去データ(22,408レース) バックテスト結果")
 print("="*60)
 print(f"🔹 検証対象レース数 : {total_races:,} レース")
 print("-" * 60)

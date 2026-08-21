@@ -5,7 +5,7 @@ import joblib
 import os
 import re
 
-print("🌸 勝ち子ちゃん 全29特徴量・完全能力モデル 学習スクリプト")
+print("🌸 勝ち子ちゃん 全特徴量拡張・能力モデル 学習スクリプト")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar.pkl"
@@ -30,7 +30,10 @@ df['target_place'] = (df['target_rank'] <= 3.0).astype(int)
 df['target_win'] = (df['target_rank'] == 1.0).astype(int)
 
 # 基本変換
-df['first_corner'] = pd.to_numeric(df.get('first_corner'), errors='coerce')
+df['first_corner'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
+df['last_corner'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner'])
+df['corner_diff'] = df['first_corner'] - df['last_corner'] # 🆕 マクリ度
+
 df['last_3f'] = pd.to_numeric(df.get('last_3f', df.get('上り')), errors='coerce')
 df['time_diff'] = pd.to_numeric(df.get('time_diff', df.get('着差')), errors='coerce').fillna(1.5)
 df['斤量'] = pd.to_numeric(df.get('斤量'), errors='coerce').fillna(54.0)
@@ -74,25 +77,22 @@ else: df['body_weight'], df['body_weight_diff'] = 470.0, 0.0
 df['kinryo_weight_ratio'] = df['斤量'] / df['body_weight'].clip(lower=350.0)
 df['is_large_weight_change'] = (df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-# 馬場状態パース (1:良, 2:稍重, 3:重, 4:不良)
+# 馬場状態パース
 baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
 df['baba_code'] = df.get('馬場', pd.Series(['良']*len(df))).map(baba_map).fillna(1)
 df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 
-# 過去走・ローテーション・走りの質データ
+# 過去走・ローテーション
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 
-# 🆕 新規項目：上がり3F順位 & 勝ち馬からの平均タイム差
 df['last_3f_avg_rank'] = df.groupby('馬名_clean')['last_3f'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(39.0))
 df['avg_time_diff'] = df.groupby('馬名_clean')['time_diff'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(1.5))
 
-# 🆕 新規項目：道悪（重・不良）限定の平均着順
 df['bad_baba_avg_rank'] = df[df['is_bad_baba'] == 1].groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 df['bad_baba_avg_rank'] = df.groupby('馬名_clean')['bad_baba_avg_rank'].ffill().fillna(df['recent_avg_rank_3'])
 
-# 同コース・間隔
 df['same_dist_avg_rank'] = df.groupby(['馬名_clean', 'distance_num'])['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 df['same_place_avg_rank'] = df.groupby(['馬名_clean', 'place_code'])['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 
@@ -105,30 +105,32 @@ df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fil
 df['custom_time_index'] = 75.0 - (df['recent_avg_rank_3'].fillna(6.0).clip(1, 14) - 3.0) * 3.5 + (df['斤量'] - 54.0) * 1.5
 df['custom_start_index'] = (12.0 - df['prev_1c'].fillna(8.0).clip(upper=10.0)) * 6.5
 
-# 🆕 新規項目：調教師勝率・騎手×調教師コンビ勝率
+# 勝率統計（調教師・コンビ・騎手・馬主）
 trainer_col = '調教師' if '調教師' in df.columns else '騎手'
 df['trainer_clean'] = df[trainer_col].astype(str)
+df['owner_clean'] = df['馬主'].astype(str) if '馬主' in df.columns else ''
 df['jockey_trainer_combo'] = df['騎手'].astype(str) + "_" + df['trainer_clean']
 
 trainer_stats = (df[df['target_rank'] == 1.0].groupby('trainer_clean')['target_rank'].count() / df.groupby('trainer_clean')['target_rank'].count()).to_dict()
 combo_stats = (df[df['target_rank'] == 1.0].groupby('jockey_trainer_combo')['target_rank'].count() / df.groupby('jockey_trainer_combo')['target_rank'].count()).to_dict()
 jockey_stats = (df[df['target_rank'] == 1.0].groupby('騎手')['target_rank'].count() / df.groupby('騎手')['target_rank'].count()).to_dict()
+owner_stats = (df[df['target_rank'] == 1.0].groupby('owner_clean')['target_rank'].count() / df.groupby('owner_clean')['target_rank'].count()).to_dict() if '馬主' in df.columns else {}
 
 df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
 df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
 df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
+df['owner_win_rate'] = df['owner_clean'].map(owner_stats).fillna(0.05)
 
-# 🆕 新規項目：コース×距離×枠順の構造的勝率
 waku_place_stats = (df[df['target_rank'] == 1.0].groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count() / df.groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count()).to_dict()
 df['waku_place_win_rate'] = df.set_index(['place_code', 'distance_num', 'waku_num']).index.map(waku_place_stats).fillna(0.10)
 
-# 💡 全29の特徴量
+# 特徴量リスト
 features = [
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
     'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
-    'prev_1c', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
+    'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
     'horse_career_runs', 'custom_time_index', 'custom_start_index', 
-    'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate', 'waku_place_win_rate',
+    'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate', 'owner_win_rate', 'waku_place_win_rate',
     '斤量', 'sex_code', 'age', 'body_weight', 'body_weight_diff', 
     'kinryo_weight_ratio', 'distance_num', '馬番_num', 'place_code'
 ]
@@ -153,4 +155,4 @@ joblib.dump({
     'features': features
 }, MODEL_FILE)
 
-print("✨ 全29特徴量モデル（`keiba_ai_model_nar.pkl`）の学習が完了しました！")
+print("✨ 拡張特徴量モデル（`keiba_ai_model_nar.pkl`）の学習が完了しました！")
