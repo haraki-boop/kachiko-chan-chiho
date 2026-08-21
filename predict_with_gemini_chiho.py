@@ -53,7 +53,6 @@ NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "4
 def clean_horse_name(name): 
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
-# 💡 当日の馬体重が未発表の場合はシンプルに「-」を表示
 def format_weight_display(val):
     if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-":
         return "-"
@@ -207,13 +206,11 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
         race_df['sex_code'], race_df['age'] = [x[0] for x in parsed_sa], [x[1] for x in parsed_sa]
     else: race_df['sex_code'], race_df['age'] = 0, 4.0
 
-    # 馬体重が取得できていない場合は一旦前走体重を埋める（AI特徴量用）
     race_df['prev_weight'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_weight', 470.0))
     
     if '馬体重' in race_df.columns:
         parsed_w = race_df['馬体重'].apply(parse_weight_info)
         race_df['body_weight'], race_df['body_weight_diff'] = [x[0] for x in parsed_w], [x[1] for x in parsed_w]
-        # 空っぽだった場合は前走体重で補完
         race_df.loc[race_df['body_weight'] == 470.0, 'body_weight'] = race_df['prev_weight']
     else: 
         race_df['body_weight'] = race_df['prev_weight']
@@ -251,13 +248,11 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(20.0, 99.0).round(1)
     race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(20.0, 99.0).round(1)
 
-    # 💡 UI用の注目フラグ算出（AIスコアには影響させない純粋表示用）
     race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
     race_df['is_nige_candidate'] = (race_df['prev_1c'] <= 2.5).astype(int)
     nige_count = race_df['is_nige_candidate'].sum()
     race_df['single_escape_flag'] = np.where((race_df['is_nige_candidate'] == 1) & (nige_count == 1), 1, 0)
 
-    # 🧠 全29特徴量による純粋AI推論（加点なし！）
     race_df['place_prob'] = 0.3
     race_df['win_prob'] = 0.1
     
@@ -299,6 +294,7 @@ def get_mark(idx):
     elif idx == 2: return "▲ 単穴"
     elif idx == 3: return "△1 連下"
     elif idx == 4: return "△2 押さえ"
+    elif idx == 5: return "△3 穴特注"
     else: return "消"
 
 def generate_beautiful_table(disp_df):
@@ -312,10 +308,8 @@ def generate_beautiful_table(disp_df):
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
         abnormal = "<span class='badge-alert'>🚨大口</span>" if r.get('is_abnormal', False) else "-"
-        # 💡 シンプルになった馬体重表示
         weight_str = format_weight_display(r.get('馬体重', '-'))
         
-        # 💡 UI表示用の注目フラグ
         flags = []
         if r.get('single_escape_flag', 0) == 1: flags.append("<span style='color:#e74c3c; font-size:0.85em; font-weight:bold;'>[🔥] 独走逃げ</span>")
         elif r.get('first_corner_rank', 99) <= 2: flags.append("<span style='color:#e67e22; font-size:0.85em; font-weight:bold;'>[⚡] テン速</span>")
@@ -397,7 +391,7 @@ with tab_forecast:
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
 全29特徴量で分析した「純粋な3着内率・能力順」で評価しています。
-バックテストで証明された最高勝率の買い目構成を中心に案内してください。
+バックテストで証明された最高効率の買い目構成（3連複6点＆3連単8点）を中心に案内してください。
 
 【出力フォーマット】
 ---
@@ -410,16 +404,18 @@ with tab_forecast:
 * ▲ 単穴: 〇〇番
 * △1 連下: 〇〇番
 * △2 押さえ: 〇〇番
+* △3 穴特注: 〇〇番
 
 ### 🎀 最高的中率・推奨買い目
 * **【高軸信頼・本線】3連複 1軸4頭流し (6点) ※バックテスト的中率 34.1%**
   * 軸: ◎ ＝ ◯, ▲, △1, △2
-* **【高配当・一発狙い】3連単 最強フォーメーション (8点) ※バックテスト的中率 16.8%**
-  * 1着: ◎, ◯
-  * 2着: ◎, ◯, ▲
-  * 3着: ◯, ▲, △1, △2
+* **【回収率最高・黄金フォーメーション】3連単 厳選マークシート指定 (ピッタリ8点) ※バックテスト的中率 15.4%**
+  * **1着:** ◎ (1頭固定)
+  * **2着:** ◎, ◯, ▲ (3頭指定)
+  * **3着:** ◎, ◯, ▲, △1, △2, △3 (6頭指定)
+  *(※マークシート上でそのまま塗りつぶすと、1着固定により自動的に【実質8点】となり、最高回収率を発揮します)*
 ---"""
-            with st.spinner("🎀 最強フォーメーション生成中..."):
+            with st.spinner("🎀 黄金フォーメーション(8点)を生成中..."):
                 try:
                     ai_client = genai.Client(api_key=api_key_input)
                     response = ai_client.models.generate_content(
