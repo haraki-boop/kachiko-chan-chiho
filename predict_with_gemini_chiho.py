@@ -306,8 +306,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
         except Exception: pass
 
-    max_p = max(race_df['place_prob'].max(), 0.01)
-    race_df['score_brain1'] = ((race_df['place_prob'] / max_p) * 90 + 9).clip(10, 99).astype(int)
+    # ⭕ 修正後の正常なコード
+max_p = race_df['place_prob'].max()
+if max_p > 0:
+    # トップ馬を99点にし、相対的な能力差を10〜99点にきれいに分散させる
+    race_df['score_brain1'] = ((race_df['place_prob'] / max_p) * 89 + 10).clip(10, 99).astype(int)
+else:
+    race_df['score_brain1'] = 50
 
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.5) & (race_df['単勝_num'] >= 4.0)
