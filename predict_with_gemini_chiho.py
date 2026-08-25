@@ -22,6 +22,42 @@ st.markdown("""
     h1 { font-size: 1.9rem !important; color: #c94a65 !important; font-weight: 800; }
     h2 { font-size: 1.4rem !important; color: #5a3d46 !important; }
     .section-header { font-size: 1.25rem; font-weight: 800; color: #c94a65 !important; margin-top: 1.5rem; margin-bottom: 1rem; border-bottom: 2px solid #f2cdd5; padding-bottom: 6px; }
+    
+    /* 🚨 最上部ハイライトバナーデザイン */
+    .rec-banner-through {
+        background: linear-gradient(135deg, #ff4d4d, #ff3333);
+        color: #ffffff !important;
+        padding: 18px 24px;
+        border-radius: 12px;
+        font-size: 1.3rem;
+        font-weight: 900;
+        box-shadow: 0 4px 15px rgba(255, 77, 77, 0.3);
+        margin-bottom: 25px;
+        border: 2px solid #cc0000;
+    }
+    .rec-banner-one-strong {
+        background: linear-gradient(135deg, #00b894, #00bec4);
+        color: #ffffff !important;
+        padding: 18px 24px;
+        border-radius: 12px;
+        font-size: 1.3rem;
+        font-weight: 900;
+        box-shadow: 0 4px 15px rgba(0, 184, 148, 0.3);
+        margin-bottom: 25px;
+        border: 2px solid #008060;
+    }
+    .rec-banner-top4 {
+        background: linear-gradient(135deg, #ff9f43, #feca57);
+        color: #222222 !important;
+        padding: 18px 24px;
+        border-radius: 12px;
+        font-size: 1.3rem;
+        font-weight: 900;
+        box-shadow: 0 4px 15px rgba(255, 159, 67, 0.3);
+        margin-bottom: 25px;
+        border: 2px solid #e67e22;
+    }
+
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
     .kachi-table { width: 100%; border-collapse: collapse; background-color: #ffffff; white-space: nowrap; }
     .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff !important; font-weight: bold; }
@@ -261,7 +297,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
             
             if m_feat and m_place:
                 X = race_df.copy()
-                X['place_code'] = X['place_code'].astype('category')
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
                 X_input = X[m_feat]
@@ -285,7 +320,6 @@ if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_c
     st.cache_resource.clear()
     st.rerun()
 
-# 🌸 印のロジックを最大4頭（◎◯▲△）に完全圧縮
 def get_mark(idx):
     if idx == 0: return "◎ 本命"
     elif idx == 1: return "◯ 対抗"
@@ -375,10 +409,68 @@ with tab_forecast:
         scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
         if scored_df is not None:
+            # --------------------------------------------------------
+            # 🚨【改善点】Python側で直接即時にトップ表示する買い目判定バナー
+            # --------------------------------------------------------
+            scores = scored_df['score_brain1'].tolist()
+            s1 = scores[0] if len(scores) > 0 else 50
+            s2 = scores[1] if len(scores) > 1 else 40
+            s3 = scores[2] if len(scores) > 2 else 30
+            s4 = scores[3] if len(scores) > 3 else 25
+            s6 = scores[5] if len(scores) > 5 else 15
+            
+            diff1_2 = s1 - s2
+            diff1_6 = s1 - s6
+
+            # 厳密な判定ロジック
+            if diff1_6 <= 8:
+                st.markdown("""
+                <div class='rec-banner-through'>
+                    🚨 判定：【見（スルー）推奨】（全馬大混戦）<br>
+                    <span style='font-size:0.85em; font-weight:normal;'>1位〜6位の実力が拮抗しており危険です。このレースは購入せずスルーするのが期待値上、最も安全です。</span>
+                </div>
+                """, unsafe_allow_html=True)
+            elif diff1_2 >= 15:
+                u1 = int(scored_df.iloc[0]['馬番_num'])
+                u2 = int(scored_df.iloc[1]['馬番_num']) if len(scored_df) > 1 else 0
+                u3 = int(scored_df.iloc[2]['馬番_num']) if len(scored_df) > 2 else 0
+                u4 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
+                
+                st.markdown(f"""
+                <div class='rec-banner-one-strong'>
+                    🎯 判定：【1強抜けた勝負】◎1頭固定（本命鉄板）<br>
+                    <span style='font-size:0.85em; font-weight:normal;'>
+                    * <b>馬単 (3点):</b> {u1:02d} ➔ {u2:02d}, {u3:02d}, {u4:02d}<br>
+                    * <b>3連単 (6点):</b> 1着: {u1:02d} ➔ 2着: {u2:02d}, {u3:02d} ➔ 3着: {u2:02d}, {u3:02d}, {u4:02d}
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                u1 = int(scored_df.iloc[0]['馬番_num'])
+                u2 = int(scored_df.iloc[1]['馬番_num']) if len(scored_df) > 1 else 0
+                u3 = int(scored_df.iloc[2]['馬番_num']) if len(scored_df) > 2 else 0
+                u4 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
+                
+                st.markdown(f"""
+                <div class='rec-banner-top4'>
+                    🔥 判定：【上位4頭拮抗】4頭BOX勝負<br>
+                    <span style='font-size:0.85em; font-weight:normal;'>
+                    * <b>馬連BOX (6点):</b> {u1:02d}, {u2:02d}, {u3:02d}, {u4:02d}<br>
+                    * <b>3連複BOX (4点):</b> {u1:02d}, {u2:02d}, {u3:02d}, {u4:02d}
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # --------------------------------------------------------
+            # 📊 出馬表（スコア一覧表）
+            # --------------------------------------------------------
             st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 4頭厳選ロジック)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-        if st.button("🎀 Geminiで【このレースに最適な勝負買い目】を予想", type="primary", use_container_width=True):
+        # --------------------------------------------------------
+        # 🎀 Gemini詳細解説（見解を補足したい場合のみクリック）
+        # --------------------------------------------------------
+        if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
             if not api_key_input: 
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
@@ -388,57 +480,43 @@ with tab_forecast:
             s2 = scores[1] if len(scores) > 1 else 40
             s3 = scores[2] if len(scores) > 2 else 30
             s4 = scores[3] if len(scores) > 3 else 25
-            s5 = scores[4] if len(scores) > 4 else 20
             s6 = scores[5] if len(scores) > 5 else 15
             
             diff1_2 = s1 - s2
-            diff1_4 = s1 - s4
-            diff4_5 = s4 - s5
             diff1_6 = s1 - s6
 
-            # 🌸 バックテスト結果を100%落とし込んだ最新判定ロジック
             if diff1_6 <= 8:
                 rec_pattern_name = "🚨 カオス混戦・【見（スルー）推奨】"
-                rec_detail = "1位〜6位の実力が横一線で拮抗しており、全馬に勝利チャンスがある危険な大混戦です。地方競馬の資金管理ルールに従い、**このレースは馬券を購入せずスルー（見）するのが最も期待値が高い判断**となります。"
             elif diff1_2 >= 15:
-                rec_pattern_name = "🎯 【1強抜けた勝負】◎1頭固定 馬単流し(3点) ＆ 3連単(6点)"
-                rec_detail = "* **馬単 (3点):** ◎ ➔ ◯, ▲, △\n* **3連単 (6点):** 1着: ◎ ➔ 2着: ◯, ▲ ➔ 3着: ◯, ▲, △\n*(※バックテストにおいて1,620レース中、馬単的中率50.8% / 3連単的中率33.3%を叩き出した本命鉄板ロジックです)*"
+                rec_pattern_name = "🎯 【1強抜けた勝負】◎1頭固定"
             else:
-                rec_pattern_name = "🔥 【上位4頭拮抗】4頭BOX勝負（馬連6点 / 3連複4点）"
-                rec_detail = "* **馬連BOX (6点):** ◎, ◯, ▲, △\n* **3連複BOX (4点):** ◎, ◯, ▲, △\n* **3連単BOX (24点):** ◎, ◯, ▲, △\n*(※5位以下を引き離した上位4頭の実力が抜き出ているため、4頭に完全厳選して高配当を狙い撃ちます)*"
+                rec_pattern_name = "🔥 【上位4頭拮抗】4頭BOX勝負"
 
             table_summary = []
             for idx, row in scored_df.iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
                     table_summary.append(
-                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AI能力スコア:{row['score_brain1']} | 3着内率:{row['place_prob']*100:.1f}% | "
-                        f"1着率:{row['win_prob']*100:.1f}% | オッズ:{row['単勝_num']}倍"
+                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AI能力スコア:{row['score_brain1']} | 3着内率:{row['place_prob']*100:.1f}%"
                     )
 
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
+Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
+
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
-能力スコア（1位:{s1}点 / 2位:{s2}点 / 3位:{s3}点 / 4位:{s4}点 / 6位:{s6}点）を分析し、最適化された買い目を提示してください。
+自動判定された買い目戦略: {rec_pattern_name}
 
-【自動判定された買い目・戦略】
-{rec_pattern_name}
+【回答の構成】
+🌸 勝ち子ちゃんの馬場・展開の見解
+（ここに短評を入れる）
 
-【出力フォーマット】
----
-### 🌸 馬場傾向・展開考察
-* （スコア差と展開に基づく短評）
-
-### 🎯 勝ち子ちゃんの厳選4頭印
-* ◎ 本命: 〇〇番
-* ◯ 対抗: 〇〇番
-* ▲ 単穴: 〇〇番
-* △ 連下: 〇〇番
-
-### 🎀 【推奨買い目判定】
-#### **{rec_pattern_name}**
-{rec_detail}
----"""
-            with st.spinner("🎀 このレースにベストな買い目を判定中..."):
+🎯 注目馬解説
+◎ 本命: 馬番・馬名（理由）
+◯ 対抗: 馬番・馬名（理由）
+▲ 単穴: 馬番・馬名（理由）
+△ 連下: 馬番・馬名（理由）
+"""
+            with st.spinner("🎀 分析の見解を作成中..."):
                 try:
                     ai_client = genai.Client(api_key=api_key_input)
                     response = ai_client.models.generate_content(
@@ -446,7 +524,9 @@ with tab_forecast:
                         contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.3)
                     )
-                    st.markdown(f"<div class='gemini-output-box'>{response.text}</div>", unsafe_allow_html=True)
+                    # 先頭の不要な記号（Markdown破綻防止）を自動でカットして綺麗に表示
+                    clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
+                    st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
                 except Exception as e: st.error(f"エラー: {e}")
 
 with tab_dashboard:
