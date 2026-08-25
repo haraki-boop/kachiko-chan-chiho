@@ -13,7 +13,7 @@ from google.genai import types
 # ==========================================
 # 🌸 1. カスタムCSS & デザイン設定
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | 軸1頭相手4頭流し(6点)高的中モデル", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | 最適券種自動判定モデル", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -25,25 +25,18 @@ st.markdown("""
     
     .rec-banner-through {
         background: linear-gradient(135deg, #ff4d4d, #ff3333);
-        color: #ffffff !important;
-        padding: 18px 24px;
-        border-radius: 12px;
-        font-size: 1.3rem;
-        font-weight: 900;
-        box-shadow: 0 4px 15px rgba(255, 77, 77, 0.3);
-        margin-bottom: 25px;
-        border: 2px solid #cc0000;
+        color: #ffffff !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
+        box-shadow: 0 4px 15px rgba(255, 77, 77, 0.3); margin-bottom: 25px; border: 2px solid #cc0000;
     }
-    .rec-banner-one-strong {
+    .rec-banner-puku {
         background: linear-gradient(135deg, #00b894, #00bec4);
-        color: #ffffff !important;
-        padding: 18px 24px;
-        border-radius: 12px;
-        font-size: 1.3rem;
-        font-weight: 900;
-        box-shadow: 0 4px 15px rgba(0, 184, 148, 0.3);
-        margin-bottom: 25px;
-        border: 2px solid #008060;
+        color: #ffffff !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
+        box-shadow: 0 4px 15px rgba(0, 184, 148, 0.3); margin-bottom: 25px; border: 2px solid #008060;
+    }
+    .rec-banner-tan {
+        background: linear-gradient(135deg, #fbc531, #e1b12c);
+        color: #222222 !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
+        box-shadow: 0 4px 15px rgba(225, 177, 44, 0.3); margin-bottom: 25px; border: 2px solid #c28f00;
     }
 
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
@@ -66,10 +59,13 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (軸1頭相手4頭流し 6点勝負モデル)")
+with col2: st.title("AI予想 勝ち子ちゃん (最適券種 自動判定モデル)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
+
+def set_race_id(rid):
+    st.session_state['selected_race_id'] = rid
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 HISTORY_CSV, FUTURE_CSV, ML_TARGET_CSV, MODEL_FILE = "prediction_history_chiho.csv", "future_races_chiho.csv", "ml_target_data_chiho.csv", "keiba_ai_model_nar.pkl"
@@ -79,8 +75,7 @@ def clean_horse_name(name):
     return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
 
 def format_weight_display(val):
-    if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-":
-        return "-"
+    if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-": return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
 
@@ -96,10 +91,7 @@ def parse_weight_info(val):
     if pd.isna(val): return 470.0, 0.0
     s = str(val).strip()
     m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s)
-    if m:
-        w = float(m.group(1))
-        diff = float(m.group(2)) if m.group(2) else 0.0
-        return w, diff
+    if m: return float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0
     return 470.0, 0.0
 
 def load_csv_safe(path, dtype_dict=None):
@@ -142,7 +134,6 @@ def build_past_dicts(df_p):
         df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
         df_p['time_sec'] = pd.to_numeric(df_p.get('time_sec', df_p.get('タイム')), errors='coerce')
         df_p['speed'] = df_p['distance_num'] / df_p['time_sec'].clip(lower=10.0)
-
         df_p['place_code'] = df_p['race_id'].astype(str).str[4:6]
         df_p['騎手_clean'] = df_p['騎手'].astype(str).apply(clean_horse_name)
         trainer_col = '調教師' if '調教師' in df_p.columns else '騎手'
@@ -160,14 +151,11 @@ def build_past_dicts(df_p):
             for wp, m in df_p.groupby(['place_code', 'distance_num', 'waku_num'])['target_win'].mean().items(): waku_place_dict[wp] = m
 
         df_p['date_dt'] = pd.to_datetime(df_p.get('date', pd.Series(['2020-01-01']*len(df_p))), errors='coerce')
-
         for h, group in df_p.sort_values('date_dt').groupby('馬名_clean'):
             r3 = group.tail(3)
             last_row = r3.iloc[-1] if len(r3) > 0 else {}
-            
             f_c = pd.to_numeric(r3.get('first_corner', pd.Series([8.0])), errors='coerce').fillna(8.0).mean()
             l_c = pd.to_numeric(r3.get('last_corner', pd.Series([8.0])), errors='coerce').fillna(f_c).mean()
-            
             p1 = group.iloc[-1]['prize_money'] if len(group) >= 1 else 0.0
             p2 = group.iloc[-2]['prize_money'] if len(group) >= 2 else 0.0
             
@@ -196,7 +184,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
 
-    # 基本数値変換
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
     race_df['単勝_num'] = pd.to_numeric(race_df['単勝'], errors='coerce').fillna(15.0) if '単勝' in race_df.columns else 15.0
     race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
@@ -212,7 +199,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     else: 
         race_df['horse_weight'], race_df['weight_change'] = 470.0, 0.0
 
-    # 過去データ連動（25個の特徴量を完備）
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 6.0))
     race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 6.0))
     race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
@@ -244,7 +230,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['prize_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prize_diff', 0.0))
     
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
-
     race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
     race_df['is_nige_candidate'] = (race_df['first_corner'] <= 2.5).astype(int)
     nige_count = race_df['is_nige_candidate'].sum()
@@ -253,7 +238,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['place_prob'] = 0.3
     race_df['win_prob'] = 0.1
     
-    # 🤖 AIモデルによる本物の確率算出
     if model_data and isinstance(model_data, dict):
         try:
             m_feat = model_data.get('features', [])
@@ -270,7 +254,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
         except Exception: pass
 
-    # 能力スコアの正確な標準化（99点満点）
     max_p = race_df['place_prob'].max()
     min_p = race_df['place_prob'].min()
     if max_p > min_p:
@@ -360,8 +343,14 @@ with tab_forecast:
                     cols = st.columns(6)
                     for j, r in enumerate(sorted(place_df['r_num'].unique())[i:i+6]):
                         rid = place_df[place_df['r_num'] == r]['race_id'].iloc[0]
-                        if cols[j].button(f"{r}R", key=f"btn_{rid}", use_container_width=True, type="primary" if st.session_state['selected_race_id'] == rid else "secondary"):
-                            st.session_state['selected_race_id'] = rid
+                        # コールバックを使ってクリック時に確実に選択レースを更新させる
+                        cols[j].button(
+                            f"{r}R", 
+                            key=f"btn_{rid}", 
+                            use_container_width=True, 
+                            type="primary" if st.session_state['selected_race_id'] == rid else "secondary",
+                            on_click=set_race_id, args=(rid,)
+                        )
 
     if st.session_state['selected_race_id'] and not df_future.empty:
         st.markdown("---")
@@ -378,11 +367,17 @@ with tab_forecast:
         scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
         if scored_df is not None:
-            # 5位と6位の「能力差」で正常に判定
+            # --------------------------------------------------------
+            # 🚨【新判定ロジック】3連単 / 3連複 / 見（スルー）の自動切り替え
+            # --------------------------------------------------------
             scores = scored_df['score_brain1'].tolist()
+            s1 = scores[0] if len(scores) > 0 else 50
+            s2 = scores[1] if len(scores) > 1 else 40
             s5 = scores[4] if len(scores) > 4 else 15
             s6 = scores[5] if len(scores) > 5 else 10
-            diff5_6 = s5 - s6
+            
+            diff1_2 = s1 - s2  # 1着が抜けているかの指標
+            diff5_6 = s5 - s6  # 5位と6位の「壁」
 
             if diff5_6 < 8:
                 st.markdown("""
@@ -398,16 +393,30 @@ with tab_forecast:
                 u_a3 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
                 u_a4 = int(scored_df.iloc[4]['馬番_num']) if len(scored_df) > 4 else 0
                 
-                st.markdown(f"""
-                <div class='rec-banner-one-strong'>
-                    🎯 判定：【高的中・6点勝負】三連複 軸1頭相手4頭流し (計6点 / 600円)<br>
-                    <span style='font-size:0.85em; font-weight:normal;'>
-                    * <b>軸馬:</b> <b>{u_jiku:02d}</b><br>
-                    * <b>相手馬 (4頭):</b> {u_a1:02d}, {u_a2:02d}, {u_a3:02d}, {u_a4:02d}<br>
-                    * <b>買い目 (6点):</b> ({u_jiku:02d}-{u_a1:02d}-{u_a2:02d}), ({u_jiku:02d}-{u_a1:02d}-{u_a3:02d}), ({u_jiku:02d}-{u_a1:02d}-{u_a4:02d}), ({u_jiku:02d}-{u_a2:02d}-{u_a3:02d}), ({u_jiku:02d}-{u_a2:02d}-{u_a4:02d}), ({u_jiku:02d}-{u_a3:02d}-{u_a4:02d})
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
+                # 1着馬が2着馬を10点以上突き放している場合は「3連単」推奨
+                if diff1_2 >= 10:
+                    st.markdown(f"""
+                    <div class='rec-banner-tan'>
+                        👑 判定：【一撃狙い・3連単】 1着固定・相手4頭流し (計12点 / 1,200円)<br>
+                        <span style='font-size:0.85em; font-weight:normal;'>
+                        * <b>1着固定 (軸):</b> <b>{u_jiku:02d}</b><br>
+                        * <b>2・3着 相手 (4頭):</b> {u_a1:02d}, {u_a2:02d}, {u_a3:02d}, {u_a4:02d}<br>
+                        * <b>理由:</b> 1位の馬が完全に抜けているため、3連複ではオッズが安くなります。1着固定の3連単で破壊力を狙います。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    # 1着が抜けておらず上位5頭で拮抗している場合は「3連複」推奨
+                    st.markdown(f"""
+                    <div class='rec-banner-puku'>
+                        🎯 判定：【高的中・3連複】 軸1頭・相手4頭流し (計6点 / 600円)<br>
+                        <span style='font-size:0.85em; font-weight:normal;'>
+                        * <b>軸馬:</b> <b>{u_jiku:02d}</b><br>
+                        * <b>相手馬 (4頭):</b> {u_a1:02d}, {u_a2:02d}, {u_a3:02d}, {u_a4:02d}<br>
+                        * <b>理由:</b> 上位5頭が6位以下を離していますが、1着は混戦です。順不同で当たる3連複で手堅く射止めます。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
 
             st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 軸1頭相手4頭厳選)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
@@ -418,14 +427,12 @@ with tab_forecast:
                 st.stop()
 
             scores = scored_df['score_brain1'].tolist()
-            s5 = scores[4] if len(scores) > 4 else 15
-            s6 = scores[5] if len(scores) > 5 else 10
-            diff5_6 = s5 - s6
+            diff1_2 = scores[0] - scores[1] if len(scores) > 1 else 10
+            diff5_6 = scores[4] - scores[5] if len(scores) > 5 else 10
 
-            if diff5_6 < 8:
-                rec_pattern_name = "🚨 カオス混戦・【見（スルー）推奨】"
-            else:
-                rec_pattern_name = "🎯 【高的中・6点勝負】三連複 軸1頭相手4頭流し (6点)"
+            if diff5_6 < 8: rec_pattern_name = "🚨 6位以下混戦・【見（スルー）推奨】"
+            elif diff1_2 >= 10: rec_pattern_name = "👑 【一撃狙い・3連単】 1着固定・相手4頭流し (12点)"
+            else: rec_pattern_name = "🎯 【高的中・3連複】 軸1頭・相手4頭流し (6点)"
 
             table_summary = []
             for idx, row in scored_df.iterrows():
