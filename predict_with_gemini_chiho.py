@@ -13,7 +13,7 @@ from google.genai import types
 # ==========================================
 # 🌸 1. カスタムCSS & デザイン設定
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | 極絞り＆見(スルー)自動判定モデル", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | 軸1頭相手4頭流し(6点)高的中モデル", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -69,6 +69,7 @@ st.markdown("""
     .badge-taikou { background: linear-gradient(135deg, #3742fa, #5352ed); }
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
+    .badge-ana    { background: linear-gradient(135deg, #a55eea, #4b7bec); }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; }
     .badge-alert { background: linear-gradient(135deg, #e1b12c, #fbc531); color: #000 !important; font-weight: 900; padding: 3px 8px; border-radius: 6px; }
     .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
@@ -77,7 +78,7 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (最大4頭厳選 ＋ 混戦見スルー自動判定)")
+with col2: st.title("AI予想 勝ち子ちゃん (軸1頭相手4頭流し 6点勝負モデル)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
@@ -320,11 +321,13 @@ if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_c
     st.cache_resource.clear()
     st.rerun()
 
+# 印を最大5頭（◎◯▲△⭐）に設定
 def get_mark(idx):
-    if idx == 0: return "◎ 本命"
-    elif idx == 1: return "◯ 対抗"
-    elif idx == 2: return "▲ 単穴"
-    elif idx == 3: return "△ 連下"
+    if idx == 0: return "◎ 軸馬"
+    elif idx == 1: return "◯ 相手"
+    elif idx == 2: return "▲ 相手"
+    elif idx == 3: return "△ 相手"
+    elif idx == 4: return "⭐ 相手"
     else: return "消"
 
 def generate_beautiful_table(disp_df):
@@ -333,7 +336,7 @@ def generate_beautiful_table(disp_df):
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
-        b_cls = "badge-honmei" if "◎" in mark else "badge-taikou" if "◯" in mark else "badge-tana" if "▲" in mark else "badge-renka" if "△" in mark else "badge-keshi"
+        b_cls = "badge-honmei" if "◎" in mark else "badge-taikou" if "◯" in mark else "badge-tana" if "▲" in mark else "badge-renka" if "△" in mark else "badge-ana" if "⭐" in mark else "badge-keshi"
         kyaku = r.get('脚質', '-')
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
@@ -410,13 +413,11 @@ with tab_forecast:
         
         if scored_df is not None:
             # --------------------------------------------------------
-            # 🚨【改善点】Python側で直接即時にトップ表示する買い目判定バナー
+            # 🚨【6点買い仕様】Python側で直接即時に最上部表示する買い目バナー
             # --------------------------------------------------------
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
             s2 = scores[1] if len(scores) > 1 else 40
-            s3 = scores[2] if len(scores) > 2 else 30
-            s4 = scores[3] if len(scores) > 3 else 25
             s6 = scores[5] if len(scores) > 5 else 15
             
             diff1_2 = s1 - s2
@@ -430,33 +431,20 @@ with tab_forecast:
                     <span style='font-size:0.85em; font-weight:normal;'>1位〜6位の実力が拮抗しており危険です。このレースは購入せずスルーするのが期待値上、最も安全です。</span>
                 </div>
                 """, unsafe_allow_html=True)
-            elif diff1_2 >= 15:
-                u1 = int(scored_df.iloc[0]['馬番_num'])
-                u2 = int(scored_df.iloc[1]['馬番_num']) if len(scored_df) > 1 else 0
-                u3 = int(scored_df.iloc[2]['馬番_num']) if len(scored_df) > 2 else 0
-                u4 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
+            else:
+                u_jiku = int(scored_df.iloc[0]['馬番_num'])
+                u_a1 = int(scored_df.iloc[1]['馬番_num']) if len(scored_df) > 1 else 0
+                u_a2 = int(scored_df.iloc[2]['馬番_num']) if len(scored_df) > 2 else 0
+                u_a3 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
+                u_a4 = int(scored_df.iloc[4]['馬番_num']) if len(scored_df) > 4 else 0
                 
                 st.markdown(f"""
                 <div class='rec-banner-one-strong'>
-                    🎯 判定：【1強抜けた勝負】◎1頭固定（本命鉄板）<br>
+                    🎯 判定：【高的中・6点勝負】三連複 軸1頭相手4頭流し (計6点 / 600円)<br>
                     <span style='font-size:0.85em; font-weight:normal;'>
-                    * <b>馬単 (3点):</b> {u1:02d} ➔ {u2:02d}, {u3:02d}, {u4:02d}<br>
-                    * <b>3連単 (6点):</b> 1着: {u1:02d} ➔ 2着: {u2:02d}, {u3:02d} ➔ 3着: {u2:02d}, {u3:02d}, {u4:02d}
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                u1 = int(scored_df.iloc[0]['馬番_num'])
-                u2 = int(scored_df.iloc[1]['馬番_num']) if len(scored_df) > 1 else 0
-                u3 = int(scored_df.iloc[2]['馬番_num']) if len(scored_df) > 2 else 0
-                u4 = int(scored_df.iloc[3]['馬番_num']) if len(scored_df) > 3 else 0
-                
-                st.markdown(f"""
-                <div class='rec-banner-top4'>
-                    🔥 判定：【上位4頭拮抗】4頭BOX勝負<br>
-                    <span style='font-size:0.85em; font-weight:normal;'>
-                    * <b>馬連BOX (6点):</b> {u1:02d}, {u2:02d}, {u3:02d}, {u4:02d}<br>
-                    * <b>3連複BOX (4点):</b> {u1:02d}, {u2:02d}, {u3:02d}, {u4:02d}
+                    * <b>軸馬:</b> <b>{u_jiku:02d}</b><br>
+                    * <b>相手馬 (4頭):</b> {u_a1:02d}, {u_a2:02d}, {u_a3:02d}, {u_a4:02d}<br>
+                    * <b>買い目 (6点):</b> ({u_jiku:02d}-{u_a1:02d}-{u_a2:02d}), ({u_jiku:02d}-{u_a1:02d}-{u_a3:02d}), ({u_jiku:02d}-{u_a1:02d}-{u_a4:02d}), ({u_jiku:02d}-{u_a2:02d}-{u_a3:02d}), ({u_jiku:02d}-{u_a2:02d}-{u_a4:02d}), ({u_jiku:02d}-{u_a3:02d}-{u_a4:02d})
                     </span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -464,7 +452,7 @@ with tab_forecast:
             # --------------------------------------------------------
             # 📊 出馬表（スコア一覧表）
             # --------------------------------------------------------
-            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 4頭厳選ロジック)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 軸1頭相手4頭厳選)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         # --------------------------------------------------------
@@ -478,8 +466,6 @@ with tab_forecast:
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
             s2 = scores[1] if len(scores) > 1 else 40
-            s3 = scores[2] if len(scores) > 2 else 30
-            s4 = scores[3] if len(scores) > 3 else 25
             s6 = scores[5] if len(scores) > 5 else 15
             
             diff1_2 = s1 - s2
@@ -487,10 +473,8 @@ with tab_forecast:
 
             if diff1_6 <= 8:
                 rec_pattern_name = "🚨 カオス混戦・【見（スルー）推奨】"
-            elif diff1_2 >= 15:
-                rec_pattern_name = "🎯 【1強抜けた勝負】◎1頭固定"
             else:
-                rec_pattern_name = "🔥 【上位4頭拮抗】4頭BOX勝負"
+                rec_pattern_name = "🎯 【高的中・6点勝負】三連複 軸1頭相手4頭流し (6点)"
 
             table_summary = []
             for idx, row in scored_df.iterrows():
@@ -511,10 +495,11 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 （ここに短評を入れる）
 
 🎯 注目馬解説
-◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬名（理由）
-▲ 単穴: 馬番・馬名（理由）
-△ 連下: 馬番・馬名（理由）
+◎ 軸馬: 馬番・馬名（理由）
+◯ 相手1: 馬番・馬名（理由）
+▲ 相手2: 馬番・馬名（理由）
+△ 相手3: 馬番・馬名（理由）
+⭐ 相手4: 馬番・馬名（理由）
 """
             with st.spinner("🎀 分析の見解を作成中..."):
                 try:
@@ -524,7 +509,6 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
                         contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.3)
                     )
-                    # 先頭の不要な記号（Markdown破綻防止）を自動でカットして綺麗に表示
                     clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
                     st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
                 except Exception as e: st.error(f"エラー: {e}")
