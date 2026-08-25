@@ -3,6 +3,9 @@ import sys
 import os
 from datetime import datetime
 
+# 子プロセスの文字コードエラーを強制的に防ぐ魔法の1行
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 print("==================================================")
 print(f"🌸 勝ち子ちゃん 全自動更新＆Git同期BOT ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 print("==================================================")
@@ -10,34 +13,22 @@ print("==================================================")
 def run_command(cmd, description):
     print(f"\n🔄 [{description}] を実行中...")
     try:
-        # エラーで落ちないよう check=False にし、文字コードエラーは強制置換(replace)で突破
-        result = subprocess.run(
-            cmd, 
-            shell=True, 
-            capture_output=True, 
-            text=True, 
-            errors='replace'
-        )
+        # capture_outputを外し、画面に直接表示＆入力できるようにする
+        result = subprocess.run(cmd, shell=True)
         
         if result.returncode == 0:
             print(f"✅ [{description}] 完了")
-            if result.stdout and result.stdout.strip():
-                print(f"   💬 出力:\n{result.stdout.strip()[:300]}")
             return True
         else:
-            print(f"⚠️ [{description}] で警告またはエラーが発生しました。")
-            if result.stderr and result.stderr.strip():
-                print(f"   詳細:\n{result.stderr.strip()[:300]}")
-            elif result.stdout and result.stdout.strip():
-                print(f"   詳細:\n{result.stdout.strip()[:300]}")
+            print(f"⚠️ [{description}] がエラーで終了しました。(コード: {result.returncode})")
             return False
             
     except Exception as e:
-        print(f"❌ [{description}] の実行中に予期せぬエラーが発生しました。")
+        print(f"❌ [{description}] の実行中にエラーが発生しました。")
         print(f"   詳細: {e}")
         return False
 
-# STEP 1: 前日の確定結果＆的中履歴の更新
+# STEP 1: 前日の確定結果＆的中履歴の更新 (※ここで日付入力プロンプトが出ます)
 if os.path.exists("update_results_chiho.py"):
     run_command("python update_results_chiho.py", "確定着順＆結果データの更新")
 
@@ -66,4 +57,4 @@ else:
         print("🎉 すべての更新＆Webアプリへの自動同期が完了しました！")
         print("==================================================")
     else:
-        print("\n❌ Git Push に失敗しました。コンフリクト等が発生している可能性があります。")
+        print("\n❌ Git Push に失敗しました。")
