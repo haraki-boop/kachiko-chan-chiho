@@ -11,9 +11,9 @@ from google import genai
 from google.genai import types
 
 # ==========================================
-# 🌸 1. カスタムCSS & デザイン設定 (馬単専用機)
+# 🌸 1. カスタムCSS & デザイン設定 (馬単フォーメーション専用)
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬単6点 専用モデル", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬単フォーメーション6点 専用モデル", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -23,15 +23,10 @@ st.markdown("""
     h2 { font-size: 1.4rem !important; color: #5a3d46 !important; }
     .section-header { font-size: 1.25rem; font-weight: 800; color: #c94a65 !important; margin-top: 1.5rem; margin-bottom: 1rem; border-bottom: 2px solid #f2cdd5; padding-bottom: 6px; }
     
-    .rec-banner-fixed {
-        background: linear-gradient(135deg, #ff4d4d, #ff3333);
+    .rec-banner-formation {
+        background: linear-gradient(135deg, #f39c12, #e67e22);
         color: #ffffff !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
-        box-shadow: 0 4px 15px rgba(255, 77, 77, 0.3); margin-bottom: 25px; border: 2px solid #cc0000;
-    }
-    .rec-banner-multi {
-        background: linear-gradient(135deg, #0984e3, #74b9ff);
-        color: #ffffff !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
-        box-shadow: 0 4px 15px rgba(9, 132, 227, 0.3); margin-bottom: 25px; border: 2px solid #0984e3;
+        box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3); margin-bottom: 25px; border: 2px solid #d35400;
     }
 
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
@@ -54,7 +49,7 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (馬単6点 専用モデル)")
+with col2: st.title("AI予想 勝ち子ちゃん (馬単フォーメーション6点 専用モデル)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
@@ -268,15 +263,11 @@ if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_c
     st.cache_resource.clear()
     st.rerun()
 
-# 馬単用に印を最大7頭までに拡張
 def get_mark(idx):
     if idx == 0: return "◎ 本命"
     elif idx == 1: return "◯ 対抗"
     elif idx == 2: return "▲ 単穴"
     elif idx == 3: return "△ 連下"
-    elif idx == 4: return "⭐ 注意"
-    elif idx == 5: return "注 伏兵"
-    elif idx == 6: return "穴 大穴"
     else: return "消"
 
 def generate_beautiful_table(disp_df):
@@ -285,7 +276,7 @@ def generate_beautiful_table(disp_df):
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
-        b_cls = "badge-honmei" if "◎" in mark else "badge-taikou" if "◯" in mark else "badge-tana" if "▲" in mark else "badge-renka" if "△" in mark else "badge-ana" if "⭐" in mark else "badge-keshi"
+        b_cls = "badge-honmei" if "◎" in mark else "badge-taikou" if "◯" in mark else "badge-tana" if "▲" in mark else "badge-renka" if "△" in mark else "badge-keshi"
         kyaku = r.get('脚質', '-')
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
@@ -364,51 +355,28 @@ with tab_forecast:
         scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
         
         if scored_df is not None:
-            # 安全にインデックス外エラーを防ぐ関数
             def safe_idx(df, idx):
                 return int(df.iloc[idx]['馬番_num']) if len(df) > idx else int(df.iloc[-1]['馬番_num'])
-
-            scores = scored_df['score_brain1'].tolist()
-            s1 = scores[0] if len(scores) > 0 else 50
-            s2 = scores[1] if len(scores) > 1 else 40
-            
-            diff1_2 = s1 - s2  # 1着が抜けているかの指標
 
             u_1 = safe_idx(scored_df, 0)
             u_2 = safe_idx(scored_df, 1)
             u_3 = safe_idx(scored_df, 2)
             u_4 = safe_idx(scored_df, 3)
-            u_5 = safe_idx(scored_df, 4)
-            u_6 = safe_idx(scored_df, 5)
-            u_7 = safe_idx(scored_df, 6)
-            
-            # 1位が2位を8点以上離しているなら「1着固定・相手6頭（6点）」
-            if diff1_2 >= 8:
-                st.markdown(f"""
-                <div class='rec-banner-fixed'>
-                    👑 判定：【本命・馬単1着固定】 1位 ➔ 2〜7位 (計6点 / 600円)<br>
-                    <span style='font-size:0.85em; font-weight:normal;'>
-                    * <b>1着固定 (軸):</b> <b>{u_1:02d}</b><br>
-                    * <b>2着 相手 (6頭):</b> {u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}, {u_6:02d}, {u_7:02d}<br>
-                    * <b>理由:</b> ◎が圧倒的に抜けています。頭を固定し、ヒモ荒れ（大穴の2着突っ込み）を狙う高配当シフトです。
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                # 1位と2位が拮抗しているなら「軸1頭マルチ・相手3頭（裏表6点）」
-                st.markdown(f"""
-                <div class='rec-banner-multi'>
-                    🎯 判定：【拮抗・馬単マルチ】 1位 ⇄ 2〜4位 (裏表6点 / 600円)<br>
-                    <span style='font-size:0.85em; font-weight:normal;'>
-                    * <b>軸馬:</b> <b>{u_1:02d}</b><br>
-                    * <b>相手馬 (3頭):</b> {u_2:02d}, {u_3:02d}, {u_4:02d}<br>
-                    * <b>買い目 (6点):</b> ({u_1:02d}⇄{u_2:02d}), ({u_1:02d}⇄{u_3:02d}), ({u_1:02d}⇄{u_4:02d})<br>
-                    * <b>理由:</b> 上位の力が拮抗しています。◎が2着に敗れる裏目もカバーし、的中の取りこぼしを防ぎます。
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
 
-            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 馬単専用)</div>", unsafe_allow_html=True)
+            # 常に黄金フォーメーション(1・2位 ➔ 1〜4位)を表示
+            st.markdown(f"""
+            <div class='rec-banner-formation'>
+                🎯 判定：【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (計6点 / 600円)<br>
+                <span style='font-size:0.85em; font-weight:normal;'>
+                * <b>1着候補 (2頭):</b> <b>{u_1:02d}, {u_2:02d}</b><br>
+                * <b>2着候補 (4頭):</b> {u_1:02d}, {u_2:02d}, {u_3:02d}, {u_4:02d}<br>
+                * <b>買い目 (6点):</b> ({u_1:02d}➔{u_2:02d}), ({u_1:02d}➔{u_3:02d}), ({u_1:02d}➔{u_4:02d}), ({u_2:02d}➔{u_1:02d}), ({u_2:02d}➔{u_3:02d}), ({u_2:02d}➔{u_4:02d})<br>
+                * <b>理由:</b> AI上位4頭を最も無駄なく回収する最強のフォーメーションです。「本命と対抗の逆転」も完全にカバーします。
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 上位4頭フォーメーション)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
@@ -416,11 +384,7 @@ with tab_forecast:
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
 
-            scores = scored_df['score_brain1'].tolist()
-            diff1_2 = scores[0] - scores[1] if len(scores) > 1 else 10
-
-            if diff1_2 >= 8: rec_pattern_name = "👑 【本命・馬単1着固定】 1位 ➔ 2〜7位 (6点)"
-            else: rec_pattern_name = "🎯 【拮抗・馬単マルチ】 1位 ⇄ 2〜4位 (裏表6点)"
+            rec_pattern_name = "🎯 【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (6点)"
 
             table_summary = []
             for idx, row in scored_df.iterrows():
@@ -434,13 +398,13 @@ with tab_forecast:
 Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
 
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
-自動判定された買い目戦略（馬単専用）: {rec_pattern_name}
+自動判定された買い目戦略（馬単フォーメーション）: {rec_pattern_name}
 
 【回答の構成】
 🌸 勝ち子ちゃんの馬場・展開の見解
 （ここに短評を入れる）
 
-🎯 注目馬解説 (馬単の観点で)
+🎯 注目馬解説 (上位4頭フォーメーションの観点で)
 ◎ 本命: 馬番・馬名（理由）
 ◯ 対抗: 馬番・馬名（理由）
 ▲ 単穴: 馬番・馬名（理由）
