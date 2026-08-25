@@ -4,51 +4,66 @@ import os
 from datetime import datetime
 
 print("==================================================")
-print(f"🌸 勝ち子ちゃん 一括データ更新＆Git自動同期BOT ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+print(f"🌸 勝ち子ちゃん 全自動更新＆Git同期BOT ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
 print("==================================================")
 
-# 実行する処理のステップ定義
 def run_command(cmd, description):
     print(f"\n🔄 [{description}] を実行中...")
     try:
-        # コマンドの実行
-        result = subprocess.run(cmd, shell=True, check=True, text=True, capture_output=True)
-        print(f"✅ [{description}] 完了")
-        if result.stdout.strip():
-            print(f"   💬 出力:\n{result.stdout.strip()[:300]}") # 最初の300文字を表示
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ [{description}] でエラーが発生しました。")
-        print(f"   ⚠️ エラー内容:\n{e.stderr.strip()}")
+        # エラーで落ちないよう check=False にし、文字コードエラーは強制置換(replace)で突破
+        result = subprocess.run(
+            cmd, 
+            shell=True, 
+            capture_output=True, 
+            text=True, 
+            errors='replace'
+        )
+        
+        if result.returncode == 0:
+            print(f"✅ [{description}] 完了")
+            if result.stdout and result.stdout.strip():
+                print(f"   💬 出力:\n{result.stdout.strip()[:300]}")
+            return True
+        else:
+            print(f"⚠️ [{description}] で警告またはエラーが発生しました。")
+            if result.stderr and result.stderr.strip():
+                print(f"   詳細:\n{result.stderr.strip()[:300]}")
+            elif result.stdout and result.stdout.strip():
+                print(f"   詳細:\n{result.stdout.strip()[:300]}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ [{description}] の実行中に予期せぬエラーが発生しました。")
+        print(f"   詳細: {e}")
         return False
 
-# STEP 1: 未来レースデータ（出馬表）の取得スクリプト実行
-# ※お持ちのスクリプト名（例: scrape_future.py 等）に合わせて変更してください
-if os.path.exists("scrape_future.py"):
-    if not run_command("python scrape_future.py", "最新出馬表データの取得・作成"):
-        print("⚠️ 出馬表更新で問題が発生しましたが処理を継続します。")
-else:
-    print("ℹ️ scrape_future.py が見つからないためデータ取得ステップをスキップします。")
+# STEP 1: 前日の確定結果＆的中履歴の更新
+if os.path.exists("update_results_chiho.py"):
+    run_command("python update_results_chiho.py", "確定着順＆結果データの更新")
 
-# STEP 2: Git ステージング (git add)
-if not run_command("git add .", "変更ファイルのステージング (git add)"):
+# STEP 2: 本日の最新出馬表データのスクレイピング取得
+if os.path.exists("scrape_chiho_today.py"):
+    run_command("python scrape_chiho_today.py", "本日開催の最新出馬表取得")
+
+# STEP 3: Git ステージング
+if not run_command("git add .", "全変更ファイルのステージング (git add)"):
+    print("❌ Git add に失敗しました。処理を中断します。")
     sys.exit(1)
 
-# STEP 3: Git コミット (git commit)
-commit_msg = f"auto: レースデータおよび予測結果の一括自動更新 ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+# STEP 4: Git コミット
+commit_msg = f"auto: 本日データ一括更新 ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
 run_command(f'git commit -m "{commit_msg}"', "Gitコミット (git commit)")
 
-# STEP 4: Git プッシュ (git push)
-if run_command("git push origin main", "リモートリポジトリへ送信 (git push)"):
+# STEP 5: Git プッシュ
+if run_command("git push origin main", "リモート(main)へ送信 (git push)"):
     print("\n==================================================")
-    print("🎉 すべての一括更新＆Git同期作業が正常に完了しました！")
+    print("🎉 すべての更新＆Webアプリへの自動同期が完了しました！")
     print("==================================================")
 else:
-    # mainで失敗した場合はmasterを試行
-    print("🔄 origin/main での送信に失敗したため、origin/master を試行します...")
-    if run_command("git push origin master", "リモートリポジトリへ送信 (git push origin master)"):
+    print("🔄 origin/master での送信を再試行中...")
+    if run_command("git push origin master", "リモート(master)へ送信"):
         print("\n==================================================")
-        print("🎉 すべての一括更新＆Git同期作業が正常に完了しました！")
+        print("🎉 すべての更新＆Webアプリへの自動同期が完了しました！")
         print("==================================================")
     else:
-        print("\n⚠️ Git Push に失敗しました。ネットワーク状態やコンフリクトを確認してください。")
+        print("\n❌ Git Push に失敗しました。コンフリクト等が発生している可能性があります。")
