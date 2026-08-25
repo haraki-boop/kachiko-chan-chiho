@@ -413,22 +413,22 @@ with tab_forecast:
         
         if scored_df is not None:
             # --------------------------------------------------------
-            # 🚨【6点買い仕様】Python側で直接即時に最上部表示する買い目バナー
+            # 🚨【1軸4頭流し専用】正しく整合性を合わせた判定ロジック
             # --------------------------------------------------------
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
             s2 = scores[1] if len(scores) > 1 else 40
-            s6 = scores[5] if len(scores) > 5 else 15
+            s5 = scores[4] if len(scores) > 4 else 15
             
             diff1_2 = s1 - s2
-            diff1_6 = s1 - s6
+            diff1_5 = s1 - s5  # 上位5頭（軸1+相手4）内のスコア差
 
-            # 厳密な判定ロジック
-            if diff1_6 <= 8:
+            # 上位5頭の中でも実力が完全に拮抗していて絞れない場合のみスルー
+            if diff1_5 <= 8:
                 st.markdown("""
                 <div class='rec-banner-through'>
-                    🚨 判定：【見（スルー）推奨】（全馬大混戦）<br>
-                    <span style='font-size:0.85em; font-weight:normal;'>1位〜6位の実力が拮抗しており危険です。このレースは購入せずスルーするのが期待値上、最も安全です。</span>
+                    🚨 判定：【見（スルー）推奨】（上位拮抗・大混戦）<br>
+                    <span style='font-size:0.85em; font-weight:normal;'>上位5頭（軸＋相手4頭）の実力が横一線で拮抗しており危険です。購入せずスルーするのが期待値上、最も安全です。</span>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -466,12 +466,12 @@ with tab_forecast:
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
             s2 = scores[1] if len(scores) > 1 else 40
-            s6 = scores[5] if len(scores) > 5 else 15
+            s5 = scores[4] if len(scores) > 4 else 15
             
             diff1_2 = s1 - s2
-            diff1_6 = s1 - s6
+            diff1_5 = s1 - s5
 
-            if diff1_6 <= 8:
+            if diff1_5 <= 8:
                 rec_pattern_name = "🚨 カオス混戦・【見（スルー）推奨】"
             else:
                 rec_pattern_name = "🎯 【高的中・6点勝負】三連複 軸1頭相手4頭流し (6点)"
