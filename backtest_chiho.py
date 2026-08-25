@@ -4,7 +4,7 @@ import os
 import re
 from sklearn.ensemble import HistGradientBoostingClassifier
 
-print("🌸 勝ち子ちゃん ガチ検証スクリプト (時系列・完全未知データ＆スルー判定適用)")
+print("🌸 勝ち子ちゃん ガチ検証スクリプト (純粋確率・馬単フォーメーション6点 特化版)")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 
@@ -23,6 +23,13 @@ def parse_rank(x):
 
 df['target_rank'] = df['着順'].apply(parse_rank).fillna(6.0) if '着順' in df.columns else df.get('target_rank').apply(parse_rank).fillna(6.0)
 df = df[df['target_rank'] < 90.0].copy()
+
+# ターゲット設定（連対：2着以内 と 勝利：1着）
+df['target_rentai'] = (df['target_rank'] <= 2.0).astype(int)
+df['target_win'] = (df['target_rank'] == 1.0).astype(int)
+
+# 配当計算用：単勝オッズの取得
+df['単勝_num'] = pd.to_numeric(df.get('単勝'), errors='coerce').fillna(15.0)
 
 # 日付順に厳格ソート
 if 'date' in df.columns:
@@ -114,7 +121,7 @@ features = [
     'kinryo_weight_ratio', 'distance_num', '馬番_num'
 ]
 
-# 時系列で前半80%を【学習用】、後半20%を【完全未知テスト用】に確実に分割
+# 時系列で前半80%を【学習用】、後半20%を【完全未知テスト用】に分割
 split_idx = int(len(df) * 0.80)
 train_df = df.iloc[:split_idx].copy()
 test_df = df.iloc[split_idx:].copy()
@@ -134,89 +141,92 @@ for t_data in [train_df, test_df]:
 
 features.extend(['trainer_win_rate', 'combo_win_rate', 'jockey_win_rate'])
 
-# モデル再学習（過去データのみ）
 X_train = train_df[features].fillna(0.0)
 X_test = test_df[features].fillna(0.0)
 
+y_train_rentai = train_df['target_rentai']
+y_train_win = train_df['target_win']
+
+# 🚨 ペナルティ(sample_weight)を排除した純粋確率学習
 m_place = HistGradientBoostingClassifier(max_iter=150, learning_rate=0.03, random_state=42)
-m_place.fit(X_train, (train_df['target_rank'] <= 3.0).astype(int))
+m_place.fit(X_train, y_train_rentai)
 
 m_win = HistGradientBoostingClassifier(max_iter=150, learning_rate=0.03, random_state=42)
-m_win.fit(X_train, (train_df['target_rank'] == 1.0).astype(int))
+m_win.fit(X_train, y_train_win)
 
 # 未知データへの予測実行
-test_df['prob_place'] = m_place.predict_proba(X_test)[:, 1]
+test_df['prob_place'] = m_place.predict_proba(X_test)[:, 1] # 実質はprob_rentai
 test_df['prob_win'] = m_win.predict_proba(X_test)[:, 1]
 
-# スコア計算 (0-99点)
-test_df['score'] = 0
+# アプリ本番と同じハイブリッドスコア計算
+test_df['score_brain'] = 0
 for rid, group in test_df.groupby('race_id'):
-    max_p = max(group['prob_place'].max(), 0.01)
-    test_df.loc[group.index, 'score'] = ((group['prob_place'] / max_p) * 90 + 9).clip(10, 99).astype(int)
+    w_norm = (group['prob_win'] - group['prob_win'].min()) / (group['prob_win'].max() - group['prob_win'].min() + 1e-6)
+    p_norm = (group['prob_place'] - group['prob_place'].min()) / (group['prob_place'].max() - group['prob_place'].min() + 1e-6)
+    front_bonus = np.where(group['first_corner'] <= 3.0, 0.15, 0.0)
+    
+    raw_score = (w_norm * 0.60) + (p_norm * 0.30) + front_bonus
+    test_df.loc[group.index, 'score_brain'] = (((raw_score - raw_score.min()) / (raw_score.max() - raw_score.min() + 1e-6)) * 89 + 10).astype(int)
 
-# シミュレーション集計
+# --------------------------------------------------------
+# 💰 馬単フォーメーション6点 シミュレーション
+# --------------------------------------------------------
 total_races = 0
-pass_races = 0
-
-pat1_races = 0
-pat1_umaren_hits = 0
-pat1_3fuku_hits = 0
-
-pat2_races = 0
-pat2_umatan_hits = 0
-pat2_3tan_hits = 0
+hit_races = 0
+total_investment = 0
+total_return = 0
 
 for race_id, group in test_df.groupby('race_id'):
-    if len(group) < 8 or not (1.0 in group['target_rank'].values):
+    if len(group) < 8 or not (1.0 in group['target_rank'].values) or not (2.0 in group['target_rank'].values):
         continue
 
     total_races += 1
-    sorted_g = group.sort_values(by=['score', 'prob_place'], ascending=[False, False])
-    scores = sorted_g['score'].values
-    ranks = sorted_g['target_rank'].values
+    # スコア順 ＞ 1着率順 でソート
+    sorted_g = group.sort_values(by=['score_brain', 'prob_win'], ascending=[False, False])
     
-    if len(scores) < 6: continue
+    if len(sorted_g) < 4: continue
+    
+    top4_horses = sorted_g.iloc[:4]
+    horse_1st_pred = top4_horses.iloc[0]['馬番_num']
+    horse_2nd_pred = top4_horses.iloc[1]['馬番_num']
+    horse_3rd_pred = top4_horses.iloc[2]['馬番_num']
+    horse_4th_pred = top4_horses.iloc[3]['馬番_num']
 
-    s1, s2, s3, s4, s5, s6 = scores[:6]
-    r1, r2 = ranks[0], ranks[1]
+    # 実際の1着馬と2着馬
+    actual_1st = group[group['target_rank'] == 1.0].iloc[0]['馬番_num']
+    actual_2nd = group[group['target_rank'] == 2.0].iloc[0]['馬番_num']
 
-    # カオス混戦判定 (見・スルー)
-    if (s1 - s6) <= 8:
-        pass_races += 1
-        continue
-
-    # パターン①: 4頭超厳選勝負 (1~4位差<=6 & 4~5位差>=8)
-    if (s1 - s4) <= 6 and (s4 - s5) >= 8:
-        pat1_races += 1
-        top4_ranks = set(ranks[:4])
-        if {1.0, 2.0}.issubset(top4_ranks): pat1_umaren_hits += 1
-        if {1.0, 2.0, 3.0}.issubset(top4_ranks): pat1_3fuku_hits += 1
-
-    # パターン②: 軸1頭抜け勝負 (1位~2位差>=15)
-    elif (s1 - s2) >= 15:
-        pat2_races += 1
-        if r1 == 1.0 and r2 in [2.0, 3.0, 4.0]: pat2_umatan_hits += 1
-        if r1 == 1.0 and r2 in [2.0, 3.0] and ranks[2] in [2.0, 3.0, 4.0, 5.0]: pat2_3tan_hits += 1
+    # 馬単フォーメーション (1・2位 ➔ 1〜4位) の買い目 (6点)
+    buy_patterns = [
+        (horse_1st_pred, horse_2nd_pred), (horse_1st_pred, horse_3rd_pred), (horse_1st_pred, horse_4th_pred),
+        (horse_2nd_pred, horse_1st_pred), (horse_2nd_pred, horse_3rd_pred), (horse_2nd_pred, horse_4th_pred)
+    ]
+    
+    total_investment += 600 # 1点100円 × 6点
+    
+    # 的中判定
+    is_hit = False
+    for buy_1st, buy_2nd in buy_patterns:
+        if actual_1st == buy_1st and actual_2nd == buy_2nd:
+            is_hit = True
+            hit_races += 1
+            
+            # 【仮配当計算】
+            odds_1st = group[group['馬番_num'] == actual_1st]['単勝_num'].values[0]
+            odds_2nd = group[group['馬番_num'] == actual_2nd]['単勝_num'].values[0]
+            
+            simulated_payout = max((odds_1st * odds_2nd * 100 * 0.8), 300)
+            total_return += simulated_payout
+            break
 
 print("\n" + "="*60)
-print("📊 完全未知データ バックテスト検証結果 (過学習ゼロ・時系列分割)")
+print("📊 黄金・馬単フォーメーション(6点) バックテスト結果")
 print("="*60)
-print(f"🔹 対象期間総レース数  : {total_races:,} レース")
-print(f"🚨 見(スルー)回避数    : {pass_races:,} レース (削減率: {pass_races/max(total_races,1)*100:.1f}%)")
-print(f"🔥 勝負実行レース数    : {total_races - pass_races:,} レース")
+print(f"🔹 対象レース数 : {total_races:,} レース")
+print(f"🎯 的中レース数 : {hit_races:,} レース")
+print(f"📈 的中率       : {(hit_races/total_races)*100:.1f} %")
 print("-" * 60)
-print(f"【 パターン①：4頭超厳選勝負 】(対象: {pat1_races} レース)")
-if pat1_races > 0:
-    print(f"  🌸 馬連4頭BOX (6点)  的中率: {pat1_umaren_hits/pat1_races*100:.1f}% ({pat1_umaren_hits}回)")
-    print(f"  🌸 3連複4頭BOX (4点) 的中率: {pat1_3fuku_hits/pat1_races*100:.1f}% ({pat1_3fuku_hits}回)")
-else:
-    print("  ※条件に合致するレースはありませんでした")
-
-print("-" * 60)
-print(f"【 パターン②：軸1頭抜け勝負 】(対象: {pat2_races} レース)")
-if pat2_races > 0:
-    print(f"  🌸 馬単3点流し (3点)  的中率: {pat2_umatan_hits/pat2_races*100:.1f}% ({pat2_umatan_hits}回)")
-    print(f"  🔥 3連単6点フォーメーション的中率: {pat2_3tan_hits/pat2_races*100:.1f}% ({pat2_3tan_hits}回)")
-else:
-    print("  ※条件に合致するレースはありませんでした")
+print(f"💸 総投資額     : {total_investment:,.0f} 円 (全レース 600円ベタ買い)")
+print(f"💰 仮想総回収額 : {total_return:,.0f} 円 (※単勝オッズからの推定値)")
+print(f"📊 仮想回収率   : {(total_return/total_investment)*100:.1f} %")
 print("="*60)

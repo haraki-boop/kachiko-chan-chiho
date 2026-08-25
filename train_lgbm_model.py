@@ -5,7 +5,7 @@ import joblib
 import os
 import re
 
-print("🌸 勝ち子ちゃん 全特徴量拡張・能力モデル 学習スクリプト")
+print("🌸 勝ち子ちゃん 純粋確率モデル 学習スクリプト (厳選25特徴量・前処理復元版)")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar.pkl"
@@ -14,7 +14,7 @@ if not os.path.exists(CSV_FILE):
     print(f"⚠️ {CSV_FILE} が見つかりません。")
     exit()
 
-print("📊 過去データを読み込み、拡張前処理を実行中...")
+print("📊 過去データを読み込み、前処理を実行中...")
 df = pd.read_csv(CSV_FILE, low_memory=False)
 
 def parse_rank(x):
@@ -26,13 +26,16 @@ def parse_rank(x):
 df['target_rank'] = df['着順'].apply(parse_rank) if '着順' in df.columns else df.get('target_rank').apply(parse_rank)
 df = df[df['target_rank'].notna() & (df['target_rank'] < 90.0)].copy()
 
-df['target_place'] = (df['target_rank'] <= 3.0).astype(int)
+# ターゲット設定（連対：2着以内 と 勝利：1着）
+df['target_rentai'] = (df['target_rank'] <= 2.0).astype(int)
 df['target_win'] = (df['target_rank'] == 1.0).astype(int)
 
-# 基本変換
+# --------------------------------------------------------
+# 必要な前処理群（復元）
+# --------------------------------------------------------
 df['first_corner'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
 df['last_corner'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner'])
-df['corner_diff'] = df['first_corner'] - df['last_corner'] # 🆕 マクリ度
+df['corner_diff'] = df['first_corner'] - df['last_corner']
 
 df['last_3f'] = pd.to_numeric(df.get('last_3f', df.get('上り')), errors='coerce')
 df['time_diff'] = pd.to_numeric(df.get('time_diff', df.get('着差')), errors='coerce').fillna(1.5)
@@ -77,12 +80,11 @@ else: df['body_weight'], df['body_weight_diff'] = 470.0, 0.0
 df['kinryo_weight_ratio'] = df['斤量'] / df['body_weight'].clip(lower=350.0)
 df['is_large_weight_change'] = (df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-# 馬場状態パース
 baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
 df['baba_code'] = df.get('馬場', pd.Series(['良']*len(df))).map(baba_map).fillna(1)
 df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 
-# 過去走・ローテーション
+# 過去走集計
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
@@ -105,7 +107,6 @@ df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fil
 df['custom_time_index'] = 75.0 - (df['recent_avg_rank_3'].fillna(6.0).clip(1, 14) - 3.0) * 3.5 + (df['斤量'] - 54.0) * 1.5
 df['custom_start_index'] = (12.0 - df['prev_1c'].fillna(8.0).clip(upper=10.0)) * 6.5
 
-# 勝率統計（調教師・コンビ・騎手・馬主）
 trainer_col = '調教師' if '調教師' in df.columns else '騎手'
 df['trainer_clean'] = df[trainer_col].astype(str)
 df['owner_clean'] = df['馬主'].astype(str) if '馬主' in df.columns else ''
@@ -124,27 +125,33 @@ df['owner_win_rate'] = df['owner_clean'].map(owner_stats).fillna(0.05)
 waku_place_stats = (df[df['target_rank'] == 1.0].groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count() / df.groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count()).to_dict()
 df['waku_place_win_rate'] = df.set_index(['place_code', 'distance_num', 'waku_num']).index.map(waku_place_stats).fillna(0.10)
 
-# 特徴量リスト
+
+# --------------------------------------------------------
+# 厳選25特徴量（ここで必要な25項目に絞る）
+# --------------------------------------------------------
 features = [
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
     'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
     'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
     'horse_career_runs', 'custom_time_index', 'custom_start_index', 
-    'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate', 'owner_win_rate', 'waku_place_win_rate',
-    '斤量', 'sex_code', 'age', 'body_weight', 'body_weight_diff', 
-    'kinryo_weight_ratio', 'distance_num', '馬番_num', 'place_code'
+    'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
+    '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num'
 ]
 
 X = df[features].copy()
-X['place_code'] = X['place_code'].astype('category')
 
-y_place = df['target_place']
+# カテゴリ変数の処理（今回は使用していないが念のため）
+if 'place_code' in X.columns:
+    X['place_code'] = X['place_code'].astype('category')
+
+y_rentai = df['target_rentai']
 y_win = df['target_win']
 
-print(f"🧠 AIモデル学習中 (総データ数: {len(df):,}件 / 評価特徴量: {len(features)}項目)...")
+print(f"🧠 純粋確率モデル学習中 (総データ数: {len(df):,}件 / 評価特徴量: {len(features)}項目)...")
 
+# 重み付けなしのクリーン学習
 model_place = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42)
-model_place.fit(X, y_place)
+model_place.fit(X, y_rentai)
 
 model_win = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42)
 model_win.fit(X, y_win)
@@ -155,4 +162,4 @@ joblib.dump({
     'features': features
 }, MODEL_FILE)
 
-print("✨ 拡張特徴量モデル（`keiba_ai_model_nar.pkl`）の学習が完了しました！")
+print("✨ 純粋確率モデル（`keiba_ai_model_nar.pkl`）の学習が完了しました！")

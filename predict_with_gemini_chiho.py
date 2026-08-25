@@ -11,9 +11,9 @@ from google import genai
 from google.genai import types
 
 # ==========================================
-# 🌸 1. カスタムCSS & デザイン設定 (馬単フォーメーション専用)
+# 🌸 1. カスタムCSS & デザイン設定 (馬単専用脳)
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬単フォーメーション6点 専用モデル", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬単フォーメーション 特化脳", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -40,7 +40,6 @@ st.markdown("""
     .badge-taikou { background: linear-gradient(135deg, #3742fa, #5352ed); }
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
-    .badge-ana    { background: linear-gradient(135deg, #a55eea, #4b7bec); }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; }
     .badge-alert { background: linear-gradient(135deg, #e1b12c, #fbc531); color: #000 !important; font-weight: 900; padding: 3px 8px; border-radius: 6px; }
     .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
@@ -49,7 +48,7 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (馬単フォーメーション6点 専用モデル)")
+with col2: st.title("AI予想 勝ち子ちゃん (馬単フォーメーション 特化脳)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
@@ -68,14 +67,6 @@ def format_weight_display(val):
     if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-": return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
-
-def parse_sex_age(val):
-    if pd.isna(val): return 0, 4.0
-    s = str(val).strip()
-    sex_code = 1 if '牝' in s else (2 if 'セ' in s else 0)
-    age_match = re.search(r'\d+', s)
-    age = float(age_match.group(0)) if age_match else 4.0
-    return sex_code, age
 
 def parse_weight_info(val):
     if pd.isna(val): return 470.0, 0.0
@@ -119,48 +110,32 @@ def build_past_dicts(df_p):
         df_p['first_corner'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
         df_p['last_corner'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner'])
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
-        df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
-        df_p['waku_num'] = pd.to_numeric(df_p.get('枠番'), errors='coerce').fillna(0)
-        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
         df_p['time_sec'] = pd.to_numeric(df_p.get('time_sec', df_p.get('タイム')), errors='coerce')
+        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
         df_p['speed'] = df_p['distance_num'] / df_p['time_sec'].clip(lower=10.0)
         df_p['place_code'] = df_p['race_id'].astype(str).str[4:6]
+        df_p['waku_num'] = pd.to_numeric(df_p.get('枠番'), errors='coerce').fillna(0)
         df_p['騎手_clean'] = df_p['騎手'].astype(str).apply(clean_horse_name)
         trainer_col = '調教師' if '調教師' in df_p.columns else '騎手'
         df_p['trainer_clean'] = df_p[trainer_col].apply(lambda x: re.sub(r'\[.*?\]', '', str(x)).strip() if pd.notna(x) else '')
-        df_p['owner_clean'] = df_p['馬主'].astype(str).apply(clean_horse_name) if '馬主' in df_p.columns else ''
-        df_p['combo_key'] = df_p['騎手_clean'] + "_" + df_p['trainer_clean']
         df_p['prize_money'] = pd.to_numeric(df_p.get('賞金(万円)'), errors='coerce').fillna(0.0)
 
         if 'target_win' in df_p.columns:
             for j, m in df_p.groupby('騎手_clean')['target_win'].mean().items(): jockey_dict[j] = m
             for j, c in df_p.groupby('騎手_clean')['target_win'].count().items(): jockey_runs_dict[j] = c
-            for t, m in df_p.groupby('trainer_clean')['target_win'].mean().items(): trainer_dict[t] = m
-            for c, m in df_p.groupby('combo_key')['target_win'].mean().items(): combo_dict[c] = m
-            for o, m in df_p.groupby('owner_clean')['target_win'].mean().items(): owner_dict[o] = m
             for wp, m in df_p.groupby(['place_code', 'distance_num', 'waku_num'])['target_win'].mean().items(): waku_place_dict[wp] = m
 
         df_p['date_dt'] = pd.to_datetime(df_p.get('date', pd.Series(['2020-01-01']*len(df_p))), errors='coerce')
         for h, group in df_p.sort_values('date_dt').groupby('馬名_clean'):
             r3 = group.tail(3)
-            last_row = r3.iloc[-1] if len(r3) > 0 else {}
             f_c = pd.to_numeric(r3.get('first_corner', pd.Series([8.0])), errors='coerce').fillna(8.0).mean()
             l_c = pd.to_numeric(r3.get('last_corner', pd.Series([8.0])), errors='coerce').fillna(f_c).mean()
-            p1 = group.iloc[-1]['prize_money'] if len(group) >= 1 else 0.0
-            p2 = group.iloc[-2]['prize_money'] if len(group) >= 2 else 0.0
             
             horse_dict[h] = {
-                'prev_dist': last_row.get('distance_num', 1400),
                 'first_corner': f_c,
-                'last_corner': l_c,
                 'corner_diff': f_c - l_c,
-                'last_3f': pd.to_numeric(r3.get('last_3f', pd.Series([39.0])), errors='coerce').fillna(39.0).mean(),
-                'time_diff': pd.to_numeric(r3.get('time_diff', pd.Series([1.5])), errors='coerce').fillna(1.5).mean(),
-                'recent_avg_rank_3': r3.get('target_rank', pd.Series([6.0])).mean(),
                 'best_speed': group['speed'].max() if len(group) > 0 else 15.0,
-                'prize_diff': p1 - p2,
-                'custom_pursuit_index': pd.to_numeric(r3.get('custom_pursuit_index', pd.Series([50.0])), errors='coerce').fillna(50.0).mean(),
-                'custom_last3f_index': pd.to_numeric(r3.get('custom_last3f_index', pd.Series([50.0])), errors='coerce').fillna(50.0).mean()
+                'recent_avg_rank_3': r3.get('target_rank', pd.Series([6.0])).mean()
             }
     return jockey_dict, jockey_runs_dict, trainer_dict, combo_dict, owner_dict, horse_dict, waku_place_dict
 
@@ -178,52 +153,26 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['単勝_num'] = pd.to_numeric(race_df['単勝'], errors='coerce').fillna(15.0) if '単勝' in race_df.columns else 15.0
     race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
     race_df['weight_num'] = pd.to_numeric(race_df['斤量'], errors='coerce').fillna(54.0) if '斤量' in race_df.columns else 54.0
-    race_df['gate_num'] = pd.to_numeric(race_df['馬番'], errors='coerce').fillna(0) if '馬番' in race_df.columns else 0
-    race_df['馬番_num'] = race_df['gate_num']
+    race_df['馬番_num'] = pd.to_numeric(race_df['馬番'], errors='coerce').fillna(0) if '馬番' in race_df.columns else 0
     race_df['waku_num'] = pd.to_numeric(race_df['枠番'], errors='coerce').fillna(0) if '枠番' in race_df.columns else 0
     race_df['馬名_clean'] = race_df['馬名'].astype(str).apply(clean_horse_name)
 
     if '馬体重' in race_df.columns:
         parsed_w = race_df['馬体重'].apply(parse_weight_info)
-        race_df['horse_weight'], race_df['weight_change'] = [x[0] for x in parsed_w], [x[1] for x in parsed_w]
+        race_df['horse_weight'] = [x[0] for x in parsed_w]
     else: 
-        race_df['horse_weight'], race_df['weight_change'] = 470.0, 0.0
+        race_df['horse_weight'] = 470.0
 
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 6.0))
-    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 6.0))
     race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
-    race_df['is_front'] = (race_df['first_corner'] <= 2.5).astype(int)
-    race_df['race_front_count'] = race_df['is_front'].sum()
-    
-    prev_d = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_dist', 1400))
-    race_df['dist_change'] = race_df['distance_num'] - prev_d
-    
-    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
-    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
-    race_df['recent_avg_rank_3'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_3', 6.0))
-    
-    raw_time = 75.0 - (race_df['recent_avg_rank_3'].clip(1, 14) - 3.0) * 3.5 + (race_df['weight_num'] - 54.0) * 1.5
-    raw_start = (12.0 - race_df['first_corner'].clip(upper=10.0)) * 6.5
-    race_df['custom_time_index'] = pd.Series(raw_time).fillna(30.0).clip(20.0, 99.0).round(1)
-    race_df['custom_start_index'] = pd.Series(raw_start).fillna(30.0).clip(20.0, 99.0).round(1)
-    race_df['custom_pursuit_index'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('custom_pursuit_index', 50.0))
-    race_df['custom_last3f_index'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('custom_last3f_index', 50.0))
-
-    trainer_col = '調教師' if '調教師' in race_df.columns else '騎手'
-    race_df['騎手_clean'] = race_df['騎手'].astype(str).apply(clean_horse_name)
-    race_df['trainer_clean'] = race_df[trainer_col].apply(lambda x: re.sub(r'\[.*?\]', '', str(x)).strip() if pd.notna(x) else '')
-
-    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
-    race_df['jockey_runs'] = race_df['騎手_clean'].apply(lambda x: jockey_runs_dict.get(x, 10))
-    race_df['best_speed'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('best_speed', 15.0))
-    race_df['course_bias_index'] = race_df.apply(lambda r: waku_place_dict.get((str(int(r['place_code'])), r['distance_num'], r['waku_num']), 0.20), axis=1)
-    race_df['prize_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prize_diff', 0.0))
-    
-    race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
-    race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
     race_df['is_nige_candidate'] = (race_df['first_corner'] <= 2.5).astype(int)
     nige_count = race_df['is_nige_candidate'].sum()
     race_df['single_escape_flag'] = np.where((race_df['is_nige_candidate'] == 1) & (nige_count == 1), 1, 0)
+
+    race_df['騎手_clean'] = race_df['騎手'].astype(str).apply(clean_horse_name)
+    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
+    race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
+    race_df['first_corner_rank'] = race_df['first_corner'].rank(ascending=True, method='min')
 
     race_df['place_prob'] = 0.3
     race_df['win_prob'] = 0.1
@@ -234,7 +183,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
             m_place = model_data.get('model_place')
             m_win = model_data.get('model_win')
             
-            if m_feat and m_place:
+            if m_feat and m_place and m_win:
                 X = race_df.copy()
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
@@ -244,17 +193,32 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
         except Exception: pass
 
-    max_p = race_df['place_prob'].max()
-    min_p = race_df['place_prob'].min()
-    if max_p > min_p:
-        race_df['score_brain1'] = (((race_df['place_prob'] - min_p) / (max_p - min_p)) * 89 + 10).astype(int)
+    # ==========================================
+    # 🧠 馬単特化型ブレインチューニング (スコア再計算)
+    # ==========================================
+    w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
+    p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
+    
+    w_norm = (race_df['win_prob'] - w_min) / (w_max - w_min + 1e-6)
+    p_norm = (race_df['place_prob'] - p_min) / (p_max - p_min + 1e-6)
+    
+    # 馬単専用ボーナス：テンの速い馬（1角3番手以内）にアドバンテージ
+    front_bonus = np.where(race_df['first_corner'] <= 3.0, 0.15, 0.0)
+    
+    # 1着至上主義ハイブリッドスコア: 勝率(60%) + 3着内率(30%) + 展開利(15%)
+    raw_score = (w_norm * 0.60) + (p_norm * 0.30) + front_bonus
+    
+    r_max, r_min = raw_score.max(), raw_score.min()
+    if r_max > r_min:
+        race_df['score_brain1'] = (((raw_score - r_min) / (r_max - r_min)) * 89 + 10).astype(int)
     else:
         race_df['score_brain1'] = 50
 
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.5) & (race_df['単勝_num'] >= 4.0)
 
-    return race_df.sort_values(by=['score_brain1', 'place_prob'], ascending=[False, False]).reset_index(drop=True)
+    # ソート順を「馬単用スコア」と「1着率」を最優先に変更
+    return race_df.sort_values(by=['score_brain1', 'win_prob'], ascending=[False, False]).reset_index(drop=True)
 
 st.sidebar.header("🔄 画面の更新")
 api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
@@ -272,7 +236,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>注目フラグ</th><th>騎手</th><th>脚質</th><th>純粋AI能力</th><th>3着内率</th><th>1着率</th><th>単勝オッズ</th><th>異常</th><th>印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>注目フラグ</th><th>騎手</th><th>脚質</th><th>馬単用AI能力</th><th>1着率</th><th>3着内率</th><th>単勝オッズ</th><th>異常</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
@@ -305,8 +269,8 @@ def generate_beautiful_table(disp_df):
 <td style='color:#666666 !important;'>{r.get('騎手', '-')}</td>
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_brain1'])}点</b></td>
-<td style='color:#c94a65 !important;'><b>{r['place_prob']*100:.1f}%</b></td>
-<td style='color:#666666 !important;'>{r['win_prob']*100:.1f}%</td>
+<td style='color:#c94a65 !important; font-size:1.05em;'><b>{r['win_prob']*100:.1f}%</b></td>
+<td style='color:#666666 !important;'>{r['place_prob']*100:.1f}%</td>
 <td style='color:#666666 !important;'>{r['単勝_num']:.1f}倍</td>
 <td>{abnormal}</td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
@@ -363,7 +327,6 @@ with tab_forecast:
             u_3 = safe_idx(scored_df, 2)
             u_4 = safe_idx(scored_df, 3)
 
-            # 常に黄金フォーメーション(1・2位 ➔ 1〜4位)を表示
             st.markdown(f"""
             <div class='rec-banner-formation'>
                 🎯 判定：【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (計6点 / 600円)<br>
@@ -371,12 +334,12 @@ with tab_forecast:
                 * <b>1着候補 (2頭):</b> <b>{u_1:02d}, {u_2:02d}</b><br>
                 * <b>2着候補 (4頭):</b> {u_1:02d}, {u_2:02d}, {u_3:02d}, {u_4:02d}<br>
                 * <b>買い目 (6点):</b> ({u_1:02d}➔{u_2:02d}), ({u_1:02d}➔{u_3:02d}), ({u_1:02d}➔{u_4:02d}), ({u_2:02d}➔{u_1:02d}), ({u_2:02d}➔{u_3:02d}), ({u_2:02d}➔{u_4:02d})<br>
-                * <b>理由:</b> AI上位4頭を最も無駄なく回収する最強のフォーメーションです。「本命と対抗の逆転」も完全にカバーします。
+                * <b>理由:</b> 馬単特化脳により「勝つ力」と「テンの速さ」を持つ上位4頭を抽出。取りこぼしなく仕留めます。
                 </span>
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 上位4頭フォーメーション)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんの馬単用AIスコア (📍 1着・2着 狙い撃ち)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
@@ -391,7 +354,7 @@ with tab_forecast:
                 mark = get_mark(idx)
                 if mark != "消":
                     table_summary.append(
-                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AI能力スコア:{row['score_brain1']} | 3着内率:{row['place_prob']*100:.1f}%"
+                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AI能力スコア:{row['score_brain1']} | 1着率:{row['win_prob']*100:.1f}%"
                     )
 
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
@@ -404,7 +367,7 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 🌸 勝ち子ちゃんの馬場・展開の見解
 （ここに短評を入れる）
 
-🎯 注目馬解説 (上位4頭フォーメーションの観点で)
+🎯 注目馬解説 (馬単1着・2着の観点で)
 ◎ 本命: 馬番・馬名（理由）
 ◯ 対抗: 馬番・馬名（理由）
 ▲ 単穴: 馬番・馬名（理由）
