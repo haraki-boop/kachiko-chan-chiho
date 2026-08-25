@@ -1,11 +1,16 @@
+
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import joblib
 import os
 import re
+import optuna
+from sklearn.model_selection import TimeSeriesSplit
 
-print("🌸 勝ち子ちゃん 純粋確率モデル 学習スクリプト (厳選25特徴量・前処理復元版)")
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+print("🌸 勝ち子ちゃん 純粋確率モデル (Optuna最適化版) 学習スクリプト")
 
 CSV_FILE = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar.pkl"
@@ -26,13 +31,11 @@ def parse_rank(x):
 df['target_rank'] = df['着順'].apply(parse_rank) if '着順' in df.columns else df.get('target_rank').apply(parse_rank)
 df = df[df['target_rank'].notna() & (df['target_rank'] < 90.0)].copy()
 
-# ターゲット設定（連対：2着以内 と 勝利：1着）
+# ターゲット設定
 df['target_rentai'] = (df['target_rank'] <= 2.0).astype(int)
 df['target_win'] = (df['target_rank'] == 1.0).astype(int)
 
-# --------------------------------------------------------
-# 必要な前処理群（復元）
-# --------------------------------------------------------
+# 前処理群
 df['first_corner'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
 df['last_corner'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner'])
 df['corner_diff'] = df['first_corner'] - df['last_corner']
@@ -52,7 +55,6 @@ MINAMI_KANTO_CODES = ['42', '43', '44', '45']
 df['place_code'] = df['race_id'].astype(str).str[4:6]
 df['is_minami_kanto'] = df['place_code'].isin(MINAMI_KANTO_CODES).astype(int)
 
-# 性齢 & 馬体重
 def parse_sex_age(val):
     if pd.isna(val): return 0, 4.0
     s = str(val).strip()
@@ -103,32 +105,23 @@ df['days_since_prev'] = (df['date'] - df['prev_date']).dt.days.fillna(30.0)
 df['horse_career_runs'] = df.groupby('馬名_clean').cumcount()
 df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fillna(0).astype(int)
 
-# 指数
 df['custom_time_index'] = 75.0 - (df['recent_avg_rank_3'].fillna(6.0).clip(1, 14) - 3.0) * 3.5 + (df['斤量'] - 54.0) * 1.5
 df['custom_start_index'] = (12.0 - df['prev_1c'].fillna(8.0).clip(upper=10.0)) * 6.5
 
-trainer_col = '調教師' if '調教師' in df.columns else '騎手'
-df['trainer_clean'] = df[trainer_col].astype(str)
-df['owner_clean'] = df['馬主'].astype(str) if '馬主' in df.columns else ''
-df['jockey_trainer_combo'] = df['騎手'].astype(str) + "_" + df['trainer_clean']
+# 未来データのリーク防止: 全体の平均ではなく、過去の累積平均を使用
+df['trainer_clean'] = df.get('調教師', df.get('騎手')).astype(str)
+df['jockey_clean'] = df.get('騎手', '').astype(str)
+df['jockey_trainer_combo'] = df['jockey_clean'] + "_" + df['trainer_clean']
 
-trainer_stats = (df[df['target_rank'] == 1.0].groupby('trainer_clean')['target_rank'].count() / df.groupby('trainer_clean')['target_rank'].count()).to_dict()
-combo_stats = (df[df['target_rank'] == 1.0].groupby('jockey_trainer_combo')['target_rank'].count() / df.groupby('jockey_trainer_combo')['target_rank'].count()).to_dict()
-jockey_stats = (df[df['target_rank'] == 1.0].groupby('騎手')['target_rank'].count() / df.groupby('騎手')['target_rank'].count()).to_dict()
-owner_stats = (df[df['target_rank'] == 1.0].groupby('owner_clean')['target_rank'].count() / df.groupby('owner_clean')['target_rank'].count()).to_dict() if '馬主' in df.columns else {}
+# リークしない勝率計算 (Expanding Mean: 過去走のみの累積平均)
+def calc_expanding_win_rate(group_col):
+    df_sorted = df.sort_values(['date', 'race_id'])
+    return df_sorted.groupby(group_col)['target_win'].transform(lambda x: x.shift().expanding().mean()).fillna(0.05)
 
-df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
-df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
-df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
-df['owner_win_rate'] = df['owner_clean'].map(owner_stats).fillna(0.05)
+df['trainer_win_rate'] = calc_expanding_win_rate('trainer_clean')
+df['jockey_win_rate'] = calc_expanding_win_rate('jockey_clean')
+df['combo_win_rate'] = calc_expanding_win_rate('jockey_trainer_combo')
 
-waku_place_stats = (df[df['target_rank'] == 1.0].groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count() / df.groupby(['place_code', 'distance_num', 'waku_num'])['target_rank'].count()).to_dict()
-df['waku_place_win_rate'] = df.set_index(['place_code', 'distance_num', 'waku_num']).index.map(waku_place_stats).fillna(0.10)
-
-
-# --------------------------------------------------------
-# 厳選25特徴量（ここで必要な25項目に絞る）
-# --------------------------------------------------------
 features = [
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
     'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
@@ -138,22 +131,64 @@ features = [
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num'
 ]
 
-X = df[features].copy()
-
-# カテゴリ変数の処理（今回は使用していないが念のため）
-if 'place_code' in X.columns:
-    X['place_code'] = X['place_code'].astype('category')
-
+X = df[features].fillna(0.0)
 y_rentai = df['target_rentai']
 y_win = df['target_win']
 
-print(f"🧠 純粋確率モデル学習中 (総データ数: {len(df):,}件 / 評価特徴量: {len(features)}項目)...")
+# --------------------------------------------------------
+# Optuna 自動ハイパーパラメータ最適化関数
+# --------------------------------------------------------
+def optimize_lgbm(X_data, y_data, target_name):
+    print(f"🔍 Optunaで {target_name} モデルのハイパーパラメータを自動チューニング中...")
+    
+    def objective(trial):
+        params = {
+            'objective': 'binary',
+            'metric': 'binary_logloss',
+            'verbosity': -1,
+            'random_state': 42,
+            'n_estimators': trial.suggest_int('n_estimators', 100, 300),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.08, log=True),
+            'num_leaves': trial.suggest_int('num_leaves', 7, 31),
+            'max_depth': trial.suggest_int('max_depth', 3, 7),
+            'min_child_samples': trial.suggest_int('min_child_samples', 20, 150),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
+        }
+        
+        tscv = TimeSeriesSplit(n_splits=3)
+        scores = []
+        for train_idx, val_idx in tscv.split(X_data):
+            X_tr, X_val = X_data.iloc[train_idx], X_data.iloc[val_idx]
+            y_tr, y_val = y_data.iloc[train_idx], y_data.iloc[val_idx]
+            
+            model = lgb.LGBMClassifier(**params)
+            model.fit(X_tr, y_tr)
+            preds = model.predict_proba(X_val)[:, 1]
+            
+            # LogLoss計算
+            eps = 1e-15
+            preds = np.clip(preds, eps, 1 - eps)
+            loss = -np.mean(y_val * np.log(preds) + (1 - y_val) * np.log(1 - preds))
+            scores.append(loss)
+            
+        return np.mean(scores)
 
-# 重み付けなしのクリーン学習
-model_place = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42)
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=30)
+    print(f"✨ {target_name} の最適化完了 Best Score: {study.best_value:.4f}")
+    return study.best_params
+
+# 連対モデルの最適化＆学習
+best_params_rentai = optimize_lgbm(X, y_rentai, "連対(2着以内)")
+model_place = lgb.LGBMClassifier(**best_params_rentai, random_state=42)
 model_place.fit(X, y_rentai)
 
-model_win = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42)
+# 勝利モデルの最適化＆学習
+best_params_win = optimize_lgbm(X, y_win, "勝利(1着)")
+model_win = lgb.LGBMClassifier(**best_params_win, random_state=42)
 model_win.fit(X, y_win)
 
 joblib.dump({
@@ -162,4 +197,4 @@ joblib.dump({
     'features': features
 }, MODEL_FILE)
 
-print("✨ 純粋確率モデル（`keiba_ai_model_nar.pkl`）の学習が完了しました！")
+print("✨ 自動チューニング済みモデル（`keiba_ai_model_nar.pkl`）の保存が完了しました！")
