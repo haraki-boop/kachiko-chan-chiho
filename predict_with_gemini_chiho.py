@@ -23,7 +23,6 @@ st.markdown("""
     h2 { font-size: 1.4rem !important; color: #5a3d46 !important; }
     .section-header { font-size: 1.25rem; font-weight: 800; color: #c94a65 !important; margin-top: 1.5rem; margin-bottom: 1rem; border-bottom: 2px solid #f2cdd5; padding-bottom: 6px; }
     
-    /* 🚨 最上部ハイライトバナーデザイン */
     .rec-banner-through {
         background: linear-gradient(135deg, #ff4d4d, #ff3333);
         color: #ffffff !important;
@@ -45,17 +44,6 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0, 184, 148, 0.3);
         margin-bottom: 25px;
         border: 2px solid #008060;
-    }
-    .rec-banner-top4 {
-        background: linear-gradient(135deg, #ff9f43, #feca57);
-        color: #222222 !important;
-        padding: 18px 24px;
-        border-radius: 12px;
-        font-size: 1.3rem;
-        font-weight: 900;
-        box-shadow: 0 4px 15px rgba(255, 159, 67, 0.3);
-        margin-bottom: 25px;
-        border: 2px solid #e67e22;
     }
 
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
@@ -306,13 +294,12 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
         except Exception: pass
 
-    # ⭕ 修正後の正常なコード
-max_p = race_df['place_prob'].max()
-if max_p > 0:
-    # トップ馬を99点にし、相対的な能力差を10〜99点にきれいに分散させる
-    race_df['score_brain1'] = ((race_df['place_prob'] / max_p) * 89 + 10).clip(10, 99).astype(int)
-else:
-    race_df['score_brain1'] = 50
+    # ⭕【修正ポイント】分母を直近最大値にし、トップ馬を確実に99点に規格化（10〜99点に綺麗に分散させる）
+    max_p = race_df['place_prob'].max()
+    if max_p > 0:
+        race_df['score_brain1'] = ((race_df['place_prob'] / max_p) * 89 + 10).clip(10, 99).astype(int)
+    else:
+        race_df['score_brain1'] = 50
 
     race_df['expected_odds'] = (1.0 / race_df['win_prob'].clip(lower=0.01)).round(1)
     race_df['is_abnormal'] = (race_df['単勝_num'] < race_df['expected_odds'] * 0.5) & (race_df['単勝_num'] >= 4.0)
@@ -326,7 +313,6 @@ if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_c
     st.cache_resource.clear()
     st.rerun()
 
-# 印を最大5頭（◎◯▲△⭐）に設定
 def get_mark(idx):
     if idx == 0: return "◎ 軸馬"
     elif idx == 1: return "◯ 相手"
@@ -418,17 +404,14 @@ with tab_forecast:
         
         if scored_df is not None:
             # --------------------------------------------------------
-            # 🚨【1軸4頭流し専用】正しく整合性を合わせた判定ロジック
+            # 🚨【1軸4頭流し専用】正常化された判定ロジック
             # --------------------------------------------------------
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
-            s2 = scores[1] if len(scores) > 1 else 40
             s5 = scores[4] if len(scores) > 4 else 15
             
-            diff1_2 = s1 - s2
             diff1_5 = s1 - s5  # 上位5頭（軸1+相手4）内のスコア差
 
-            # 上位5頭の中でも実力が完全に拮抗していて絞れない場合のみスルー
             if diff1_5 <= 8:
                 st.markdown("""
                 <div class='rec-banner-through'>
@@ -454,15 +437,9 @@ with tab_forecast:
                 </div>
                 """, unsafe_allow_html=True)
 
-            # --------------------------------------------------------
-            # 📊 出馬表（スコア一覧表）
-            # --------------------------------------------------------
             st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 軸1頭相手4頭厳選)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-        # --------------------------------------------------------
-        # 🎀 Gemini詳細解説（見解を補足したい場合のみクリック）
-        # --------------------------------------------------------
         if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
             if not api_key_input: 
                 st.error("【設定エラー】APIキーが見つかりません。")
@@ -470,10 +447,7 @@ with tab_forecast:
 
             scores = scored_df['score_brain1'].tolist()
             s1 = scores[0] if len(scores) > 0 else 50
-            s2 = scores[1] if len(scores) > 1 else 40
             s5 = scores[4] if len(scores) > 4 else 15
-            
-            diff1_2 = s1 - s2
             diff1_5 = s1 - s5
 
             if diff1_5 <= 8:
