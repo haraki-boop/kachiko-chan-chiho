@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import pandas as pd
 import numpy as np
 import joblib
@@ -13,7 +14,7 @@ from google.genai import types
 # ==========================================
 # 🌸 1. カスタムCSS & デザイン設定 
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬単フォーメーション 特化脳", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | ハイブリッド完全体", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -27,6 +28,10 @@ st.markdown("""
         background: linear-gradient(135deg, #f39c12, #e67e22);
         color: #ffffff !important; padding: 18px 24px; border-radius: 12px; font-size: 1.3rem; font-weight: 900;
         box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3); margin-bottom: 25px; border: 2px solid #d35400;
+    }
+    
+    .bias-box {
+        background-color: #e8f4f8; padding: 15px; border-radius: 8px; border: 1px solid #bce0ee; margin-bottom: 15px;
     }
 
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
@@ -47,13 +52,15 @@ st.markdown("""
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (本来の25特徴量フル稼働版)")
+with col2: st.title("AI予想 勝ち子ちゃん (展開・枠順ハイブリッド完全体)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
+if 'bias_multipliers' not in st.session_state: 
+    st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0, "差": 1.0, "追": 1.0}
 
-def set_race_id(rid):
-    st.session_state['selected_race_id'] = rid
+def set_race_id(rid): st.session_state['selected_race_id'] = rid
+def reset_bias(): st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0, "差": 1.0, "追": 1.0}
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 HISTORY_CSV, FUTURE_CSV, ML_TARGET_CSV, MODEL_FILE = "prediction_history_chiho.csv", "future_races_chiho.csv", "ml_target_data_chiho.csv", "keiba_ai_model_nar.pkl"
@@ -103,8 +110,7 @@ model_data = load_model()
 
 @st.cache_data
 def build_past_dicts(df_p):
-    # 本来の25特徴量を計算するための辞書構築
-    jockey_dict, horse_dict = {}, {}
+    jockey_dict, horse_dict, waku_dict = {}, {}, {} # 🌟 枠順辞書を追加
     if not df_p.empty:
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
         df_p['first_corner'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
@@ -116,40 +122,39 @@ def build_past_dicts(df_p):
         df_p['騎手_clean'] = df_p['騎手'].astype(str).apply(clean_horse_name)
 
         if 'target_win' in df_p.columns:
+            # 騎手勝率の計算
             for j, m in df_p.groupby('騎手_clean')['target_win'].mean().items(): jockey_dict[j] = m
+            # 🌟 コース×枠順勝率の計算
+            df_p['waku_num_tmp'] = pd.to_numeric(df_p.get('枠番'), errors='coerce').fillna(0)
+            df_p['place_code_tmp'] = df_p['race_id'].astype(str).str[4:6]
+            df_p['place_waku_combo'] = df_p['place_code_tmp'] + "_" + df_p['waku_num_tmp'].astype(str)
+            for w, m in df_p.groupby('place_waku_combo')['target_win'].mean().items(): waku_dict[w] = m
 
         df_p['date_dt'] = pd.to_datetime(df_p.get('date', pd.Series(['2020-01-01']*len(df_p))), errors='coerce')
         for h, group in df_p.sort_values('date_dt').groupby('馬名_clean'):
-            r3 = group.tail(3) # 直近3走
+            r3 = group.tail(3)
             f_c = pd.to_numeric(r3.get('first_corner', pd.Series([8.0])), errors='coerce').fillna(8.0).mean()
             l_c = pd.to_numeric(r3.get('last_corner', pd.Series([8.0])), errors='coerce').fillna(f_c).mean()
             l_3f = pd.to_numeric(r3.get('last_3f', pd.Series([39.0])), errors='coerce').fillna(39.0).mean()
             t_diff = pd.to_numeric(r3.get('time_diff', pd.Series([1.5])), errors='coerce').fillna(1.5).mean()
-            
-            horse_dict[h] = {
-                'first_corner': f_c,
-                'last_corner': l_c,
-                'corner_diff': f_c - l_c,
-                'last_3f': l_3f,
-                'time_diff': t_diff
-            }
-    return jockey_dict, horse_dict
+            horse_dict[h] = {'first_corner': f_c, 'last_corner': l_c, 'corner_diff': f_c - l_c, 'last_3f': l_3f, 'time_diff': t_diff}
+    return jockey_dict, horse_dict, waku_dict
 
-jockey_dict, horse_dict = build_past_dicts(df_past)
+jockey_dict, horse_dict, waku_dict = build_past_dicts(df_past)
 
 def get_kyakushitsu(fc): 
     return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
 
-def calculate_race_scores(race_id_target, target_df, baba_status="良"):
+def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dict=None):
     if target_df.empty: return None
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
 
-    # 基本情報のパース
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
     race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
     race_df['weight_num'] = pd.to_numeric(race_df['斤量'], errors='coerce').fillna(54.0) if '斤量' in race_df.columns else 54.0
     race_df['馬番_num'] = pd.to_numeric(race_df['馬番'], errors='coerce').fillna(0) if '馬番' in race_df.columns else 0
+    race_df['waku_num'] = pd.to_numeric(race_df['枠番'], errors='coerce').fillna(0) if '枠番' in race_df.columns else 0
     race_df['馬名_clean'] = race_df['馬名'].astype(str).apply(clean_horse_name)
     race_df['騎手_clean'] = race_df['騎手'].astype(str).apply(clean_horse_name)
 
@@ -159,9 +164,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     else: 
         race_df['horse_weight'] = 470.0
 
-    # ==========================================
-    # 🧠 AI予測用データ（25特徴量を過去履歴から復元）
-    # ==========================================
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
     race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
     race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
@@ -175,10 +177,16 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
     race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
 
+    # 🌟 展開・枠順特徴量の計算
+    race_df['is_front_runner'] = (race_df['first_corner'] <= 3.0).astype(int)
+    race_df['race_front_runners'] = race_df['is_front_runner'].sum() # レース全体のテン速い馬の数
+    
+    race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
+    race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
+
     race_df['place_prob'] = 0.0
     race_df['win_prob'] = 0.0
     
-    # モデル推論
     if model_data and isinstance(model_data, dict):
         try:
             m_feat = model_data.get('features', [])
@@ -193,17 +201,23 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 
                 race_df['place_prob'] = m_place.predict_proba(X_input)[:, 1]
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
-        except Exception: pass
+        except Exception as e: 
+            st.error(f"モデル予測エラー: {e}")
 
-    # 勝率と連対率からスコアを算出
     w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
     p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
     
     race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min + 1e-6)
     race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min + 1e-6)
+    
+    # 🧠 AI生スコア
     race_df['raw_score'] = (race_df['win_norm'] * 0.60) + (race_df['rentai_norm'] * 0.30)
     
-    # UI表示用に100点満点にスケール
+    # 🌟 Geminiからのリアルタイムトラックバイアス補正を適用
+    if bias_dict:
+        race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
+        race_df['raw_score'] = race_df['raw_score'] * race_df['bias_multiplier']
+
     r_max, r_min = race_df['raw_score'].max(), race_df['raw_score'].min()
     if r_max > r_min:
         race_df['score_disp'] = (((race_df['raw_score'] - r_min) / (r_max - r_min)) * 100).astype(int)
@@ -283,7 +297,64 @@ with tab_forecast:
                             on_click=set_race_id, args=(rid,)
                         )
 
+    # ==========================================
+    # 🧠 トラックバイアス入力UI
+    # ==========================================
     if st.session_state['selected_race_id'] and not df_future.empty:
+        st.markdown("---")
+        st.markdown("<div class='section-header'>🌤️ リアルタイム馬場バイアス補正 (Gemini AI)</div>", unsafe_allow_html=True)
+        
+        b_cols1, b_cols2 = st.columns([3, 1])
+        with b_cols1:
+            user_bias_text = st.text_input("今日の馬場傾向を入力（例: 「今日は前残りが凄い」「差しが決まる」など）")
+        with b_cols2:
+            st.write("")
+            st.write("")
+            if st.button("🧠 Geminiでバイアス係数を算出", use_container_width=True):
+                if not api_key_input:
+                    st.error("APIキーを入力してください。")
+                elif not user_bias_text:
+                    st.warning("馬場傾向のテキストを入力してください。")
+                else:
+                    with st.spinner("Geminiが馬場傾向を解析中..."):
+                        try:
+                            sys_inst = """ユーザーが入力した競馬の馬場傾向テキストを解析し、各脚質（逃げ・先行・差し・追込）の勝率に対する補正倍率（0.8〜1.5の範囲の数値）を出力してください。
+必ず以下のJSON形式のみを出力してください。Markdownタグ(```json)などは一切含めないでください。
+{"逃": 1.2, "先": 1.1, "差": 0.9, "追": 0.8}
+"""
+                            ai_client = genai.Client(api_key=api_key_input)
+                            response = ai_client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=user_bias_text,
+                                config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.1)
+                            )
+                            match = re.search(r'\{.*?\}', response.text, re.DOTALL)
+                            if match:
+                                parsed_dict = json.loads(match.group(0))
+                                st.session_state['bias_multipliers'] = {
+                                    k: float(v) for k, v in parsed_dict.items() if k in ["逃", "先", "差", "追"]
+                                }
+                                st.success("✅ 馬場バイアスをAIスコアに反映しました！")
+                            else:
+                                st.error("JSONデータのパースに失敗しました。")
+                        except Exception as e:
+                            st.error(f"エラーが発生しました: {e}")
+
+        bm = st.session_state['bias_multipliers']
+        st.markdown(f"""
+        <div class='bias-box'>
+            <b>現在適用中のバイアス倍率:</b> 
+            <span style='margin-left:10px;'>🏃 逃げ: <b>{bm.get('逃', 1.0):.1f}倍</b></span> | 
+            <span>🏇 先行: <b>{bm.get('先', 1.0):.1f}倍</b></span> | 
+            <span>🐎 差し: <b>{bm.get('差', 1.0):.1f}倍</b></span> | 
+            <span>🌪️ 追込: <b>{bm.get('追', 1.0):.1f}倍</b></span>
+            <br><span style='font-size:0.85em; color:#666;'>※入力内容に基づき、AIの生スコアに上記の倍率が掛け合わされています。</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("🔄 バイアスをリセット (1.0倍に戻す)"):
+            reset_bias()
+            st.rerun()
+
         st.markdown("---")
         target_id = str(st.session_state['selected_race_id'])
         info = df_future[df_future['race_id'].astype(str) == target_id].iloc[0]
@@ -295,7 +366,7 @@ with tab_forecast:
             st.session_state['baba_status'] = cond
             st.rerun()
         
-        scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'])
+        scored_df = calculate_race_scores(target_id, df_future, baba_status=st.session_state['baba_status'], bias_dict=st.session_state['bias_multipliers'])
         
         if scored_df is not None:
             def safe_idx(df, idx):
@@ -306,19 +377,31 @@ with tab_forecast:
             u_3 = safe_idx(scored_df, 2)
             u_4 = safe_idx(scored_df, 3)
 
+            score_diff = scored_df.iloc[0]['score_disp'] - scored_df.iloc[1]['score_disp'] if len(scored_df) > 1 else 10
+            
+            # ハイペース崩れ判定
+            front_runners_count = int(scored_df.iloc[0]['race_front_runners']) if 'race_front_runners' in scored_df.columns else 0
+            pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 3 else 'ペースは落ち着きそうです。前残り注意。'}"
+
+            if score_diff >= 5:
+                rec_pattern_name = "🎯 【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (6点)"
+                rec_text = f"1位と2位のスコア差が明確（{score_diff}点差）なため、強気に馬単で勝負します。"
+            else:
+                rec_pattern_name = "🛡️ 【手堅く・馬連＆ワイド】 1位 ➔ 2〜4位 (各3点)"
+                rec_text = f"上位陣が大混戦（{score_diff}点差）なため、裏目を防ぐ馬連・ワイドに切り替えます。"
+
             st.markdown(f"""
             <div class='rec-banner-formation'>
-                🎯 判定：【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (計6点 / 600円)<br>
+                {rec_pattern_name}<br>
                 <span style='font-size:0.85em; font-weight:normal;'>
-                * <b>1着候補 (2頭):</b> <b>{u_1:02d}, {u_2:02d}</b><br>
-                * <b>2着候補 (4頭):</b> {u_1:02d}, {u_2:02d}, {u_3:02d}, {u_4:02d}<br>
-                * <b>買い目 (6点):</b> ({u_1:02d}➔{u_2:02d}), ({u_1:02d}➔{u_3:02d}), ({u_1:02d}➔{u_4:02d}), ({u_2:02d}➔{u_1:02d}), ({u_2:02d}➔{u_3:02d}), ({u_2:02d}➔{u_4:02d})<br>
-                * <b>理由:</b> 過去の全25特徴量（テンの速さ、上りタイム等）をフル活用した本来の賢い予想です。
+                * <b>1位候補:</b> <b>{u_1:02d}</b><br>
+                * <b>相手候補:</b> {u_2:02d}, {u_3:02d}, {u_4:02d}<br>
+                * <b>理由:</b> 過去の25特徴量＋枠順適性＋Geminiバイアスを反映した最新予測です。{rec_text}{pace_text}
                 </span>
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 本来の25特徴量フル稼働版)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 展開・枠順ハイブリッド版)</div>", unsafe_allow_html=True)
             st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
         if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
@@ -326,27 +409,26 @@ with tab_forecast:
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
 
-            rec_pattern_name = "🎯 【黄金・馬単フォーメーション】 1・2位 ➔ 1〜4位 (6点)"
-
             table_summary = []
             for idx, row in scored_df.iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
                     table_summary.append(
-                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | AIスコア:{row['score_disp']} | 1着率:{row['win_prob']*100:.1f}%"
+                        f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | AIスコア:{row['score_disp']} | 1着率:{row['win_prob']*100:.1f}%"
                     )
 
             sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
 Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
 
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
+適用中のバイアス: 逃げ {bm.get('逃')}倍, 先行 {bm.get('先')}倍, 差し {bm.get('差')}倍, 追込 {bm.get('追')}倍
 自動判定された買い目戦略: {rec_pattern_name}
 
 【回答の構成】
 🌸 勝ち子ちゃんの展開の見解
-（ここに短評を入れる。過去のデータをフル活用した本来の予測である旨を含めて）
+（トラックバイアス係数や展開をどのように反映したかを含めて短評を入れる）
 
-🎯 注目馬解説 (馬単1着・2着の観点で)
+🎯 注目馬解説 (馬単・馬連の観点で)
 ◎ 本命: 馬番・馬名（理由）
 ◯ 対抗: 馬番・馬名（理由）
 ▲ 単穴: 馬番・馬名（理由）
