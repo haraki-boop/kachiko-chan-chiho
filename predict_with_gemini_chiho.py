@@ -11,9 +11,6 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# ==========================================
-# 🌸 1. カスタムCSS & デザイン設定 
-# ==========================================
 st.set_page_config(page_title="AI予想 勝ち子ちゃん | 第3形態アンサンブル版", page_icon="🌸", layout="wide")
 
 st.markdown("""
@@ -65,7 +62,6 @@ def reset_bias(): st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 HISTORY_CSV, FUTURE_CSV, ML_TARGET_CSV = "prediction_history_chiho.csv", "future_races_chiho.csv", "ml_target_data_chiho.csv"
 
-# 🌟 アンサンブル用のモデルファイルを指定
 MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
@@ -185,15 +181,24 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
     race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
 
+    # ==========================================
+    # 🌟 修正ポイント: AIが認識する名前にマッピング
+    # ==========================================
+    race_df['prev_1c'] = race_df['first_corner']
+    race_df['last_3f_avg_rank'] = race_df['last_3f']
+    race_df['avg_time_diff'] = race_df['time_diff']
+    race_df['body_weight'] = race_df['horse_weight']
+    race_df['kinryo_weight_ratio'] = race_df['斤量'] / race_df['body_weight'].clip(lower=350.0)
+    race_df['recent_avg_rank_3'] = 5.0 # 代替ベース値
+    race_df['custom_time_index'] = 75.0 - (race_df['recent_avg_rank_3'] - 3.0) * 3.5 + (race_df['斤量'] - 54.0) * 1.5
+    race_df['custom_start_index'] = (12.0 - race_df['prev_1c'].clip(upper=10.0)) * 6.5
+
     race_df['place_prob'] = 0.0
     race_df['win_prob'] = 0.0
     
-    # 🌟 3つのAIから予測値を算出して平均（アンサンブル）するロジック
     if model_data and isinstance(model_data, dict):
         try:
             m_feat = model_data.get('features', [])
-            
-            # 各モデルの取得
             m_place_lgb = model_data.get('model_place_lgb')
             m_win_lgb = model_data.get('model_win_lgb')
             m_place_xgb = model_data.get('model_place_xgb')
@@ -205,22 +210,19 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                 X = race_df.copy()
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
-                X_input = X[m_feat].fillna(0.0)
                 
-                # 3者の予測値を計算
+                # 特徴量を抽出して、型エラー防止のためすべてfloatに変換
+                X_input = X[m_feat].fillna(0.0).astype(float)
+                
                 p_lgb = m_place_lgb.predict_proba(X_input)[:, 1]
                 w_lgb = m_win_lgb.predict_proba(X_input)[:, 1]
-                
                 p_xgb = m_place_xgb.predict_proba(X_input)[:, 1]
                 w_xgb = m_win_xgb.predict_proba(X_input)[:, 1]
-                
                 p_cat = m_place_cat.predict_proba(X_input)[:, 1]
                 w_cat = m_win_cat.predict_proba(X_input)[:, 1]
                 
-                # 合議（平均値）
                 race_df['place_prob'] = (p_lgb + p_xgb + p_cat) / 3.0
                 race_df['win_prob'] = (w_lgb + w_xgb + w_cat) / 3.0
-                
         except Exception as e: 
             st.error(f"アンサンブル推論エラー: {e}")
 
@@ -230,7 +232,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min + 1e-6)
     race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min + 1e-6)
     
-    # 🧠 AI合議スコア
     race_df['raw_score'] = (race_df['win_norm'] * 0.60) + (race_df['rentai_norm'] * 0.30)
     
     if bias_dict:
@@ -316,9 +317,6 @@ with tab_forecast:
                             on_click=set_race_id, args=(rid,)
                         )
 
-    # ==========================================
-    # 🧠 トラックバイアス入力UI
-    # ==========================================
     if st.session_state['selected_race_id'] and not df_future.empty:
         st.markdown("---")
         st.markdown("<div class='section-header'>🌤️ リアルタイム馬場バイアス補正 (Gemini AI)</div>", unsafe_allow_html=True)
@@ -398,7 +396,6 @@ with tab_forecast:
 
             score_diff = scored_df.iloc[0]['score_disp'] - scored_df.iloc[1]['score_disp'] if len(scored_df) > 1 else 10
             
-            # ハイペース崩れ判定
             front_runners_count = int(scored_df.iloc[0]['race_front_runners']) if 'race_front_runners' in scored_df.columns else 0
             pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 3 else 'ペースは落ち着きそうです。前残り注意。'}"
 
