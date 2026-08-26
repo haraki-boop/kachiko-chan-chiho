@@ -132,11 +132,17 @@ jockey_dict, horse_dict = build_past_dicts(df_past)
 def get_kyakushitsu(fc): 
     return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
 
+def get_col(df, cols, default_val):
+    for c in cols:
+        if c in df.columns: return df[c].copy()
+    return pd.Series(default_val, index=df.index)
+
 def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     if target_df.empty: return None
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
 
+    # UI表示用データの準備（脚質や馬体重など）
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
     race_df['distance_num'] = pd.to_numeric(race_df['distance'], errors='coerce').fillna(1400) if 'distance' in race_df.columns else 1400
     race_df['weight_num'] = pd.to_numeric(race_df['斤量'], errors='coerce').fillna(54.0) if '斤量' in race_df.columns else 54.0
@@ -149,11 +155,24 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     else: 
         race_df['horse_weight'] = 470.0
 
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 6.0))
-    race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
-    race_df['騎手_clean'] = race_df['騎手'].astype(str).apply(clean_horse_name)
-    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
-    race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
+    # 過去データから脚質（コーナー通過順）を取得
+    race_df['first_corner_hist'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 6.0))
+    race_df['脚質'] = race_df['first_corner_hist'].apply(get_kyakushitsu)
+
+    # ==========================================
+    # 🧠 AI予測用データ（ターミナル検証と完全一致させる処理）
+    # ==========================================
+    # ターミナルと同じデフォルト値でAIの入力特徴量を埋める
+    race_df['first_corner'] = 8.0
+    race_df['last_corner'] = 8.0
+    race_df['corner_diff'] = 0.0
+    race_df['last_3f'] = 39.0
+    race_df['time_diff'] = 1.5
+    race_df['斤量'] = race_df['weight_num']
+    
+    MINAMI_KANTO_CODES = ['42', '43', '44', '45']
+    race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
+    race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
 
     race_df['place_prob'] = 0.0
     race_df['win_prob'] = 0.0
@@ -168,23 +187,18 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
                 X = race_df.copy()
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
-                X_input = X[m_feat]
+                X_input = X[m_feat].fillna(0.0)
                 
                 race_df['place_prob'] = m_place.predict_proba(X_input)[:, 1]
                 race_df['win_prob'] = m_win.predict_proba(X_input)[:, 1]
         except Exception: pass
 
-    # ==========================================
-    # 🧠 ターミナル検証と「完全一致」のスコア計算
-    # ==========================================
-    # 1着確率と連対確率をレース内で正規化（0〜1）
+    # ターミナル検証ロジック: 勝率60% + 連対率30%
     w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
     p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
     
     race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min + 1e-6)
     race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min + 1e-6)
-    
-    # ターミナル検証ロジック: 勝率60% + 連対率30%
     race_df['raw_score'] = (race_df['win_norm'] * 0.60) + (race_df['rentai_norm'] * 0.30)
     
     # UI表示用に100点満点にスケール
@@ -194,7 +208,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良"):
     else:
         race_df['score_disp'] = 50
 
-    # ターミナルと同じく、純粋に「raw_score」だけで降順ソート
     return race_df.sort_values(by=['raw_score'], ascending=False).reset_index(drop=True)
 
 st.sidebar.header("🔄 画面の更新")
@@ -213,7 +226,6 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    # ヘッダーから「人気」と「異常」を削除し、純粋なAIデータのみに
     html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手</th><th>脚質</th><th>AIスコア</th><th>1着率</th><th>連対率</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
