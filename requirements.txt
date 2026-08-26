@@ -6,4 +6,5 @@ requests
 google-genai
 joblib
 scikit-learn
-lightgbm
+xgboost
+catboost
