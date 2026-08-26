@@ -6,9 +6,9 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta, timezone
+import sys
 
 ML_TARGET_CSV = "ml_target_data_chiho.csv"
-MODEL_FILE = "keiba_ai_model_nar.pkl"
 
 NAR_PLACES = {
     "30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋",
@@ -28,7 +28,6 @@ def scrape_race_result(race_id, date_str):
         res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 距離と馬場状態の取得
         race_data_div = soup.find("div", class_=re.compile("RaceData01", re.I))
         distance = 1400
         baba = "良"
@@ -73,8 +72,7 @@ def scrape_race_result(race_id, date_str):
                 horse_weight = clean_text(tds[14].text) if len(tds) > 14 else ""
                 trainer = clean_text(tds[18].text) if len(tds) > 18 else ""
                 
-                target_win = 1 if rank == 1 else 0
-                
+                # 「着順」列を過去データと揃えるための修正
                 rows.append({
                     "date": date_str, "race_id": race_id, "馬名": horse_name,
                     "性齢": sei_rei, "単勝": odds, "人気": pop, "斤量": weight,
@@ -82,7 +80,7 @@ def scrape_race_result(race_id, date_str):
                     "馬体重": horse_weight, "first_corner": first_corner,
                     "last_3f": last_3f, "time_diff": time_diff, 
                     "distance": distance, "馬場": baba,
-                    "target_rank": rank, "target_win": target_win
+                    "着順": rank  # ← ここを修正
                 })
             except Exception:
                 continue
@@ -92,21 +90,32 @@ def scrape_race_result(race_id, date_str):
         return None
 
 def main():
+    # コマンドライン引数で日付指定があればそれを優先 (--date 2026-08-25)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--date', type=str, help='Date in YYYY-MM-DD')
+    args = parser.parse_args()
+
     JST = timezone(timedelta(hours=+9), 'JST')
-    target_date = datetime.now(JST) - timedelta(days=1)
     
-    print(f"📅 結果を取得したい日付を 8桁 で入力してください（例: 20260819）")
-    default_date = target_date.strftime("%Y%m%d")
-    user_input = input(f"そのままEnterを押すと昨日({default_date})になります: ").strip()
-    
-    if len(user_input) == 8 and user_input.isdigit():
-        year = user_input[0:4]
-        mmdd = user_input[4:8]
-        date_formatted = f"{year}-{user_input[4:6]}-{user_input[6:8]}"
+    if args.date:
+        date_formatted = args.date
+        year = date_formatted[0:4]
+        mmdd = date_formatted[5:7] + date_formatted[8:10]
     else:
-        year = target_date.strftime("%Y")
-        mmdd = target_date.strftime("%m%d")
-        date_formatted = target_date.strftime("%Y-%m-%d")
+        target_date = datetime.now(JST) - timedelta(days=1)
+        print(f"📅 結果を取得したい日付を 8桁 で入力してください（例: 20260819）")
+        default_date = target_date.strftime("%Y%m%d")
+        user_input = input(f"そのままEnterを押すと昨日({default_date})になります: ").strip()
+        
+        if len(user_input) == 8 and user_input.isdigit():
+            year = user_input[0:4]
+            mmdd = user_input[4:8]
+            date_formatted = f"{year}-{user_input[4:6]}-{user_input[6:8]}"
+        else:
+            year = target_date.strftime("%Y")
+            mmdd = target_date.strftime("%m%d")
+            date_formatted = target_date.strftime("%Y-%m-%d")
     
     print(f"\n📅 対象日: {date_formatted} のレース結果を回収します...")
     all_dfs = []
@@ -128,21 +137,17 @@ def main():
         
         if os.path.exists(ML_TARGET_CSV):
             old_data = pd.read_csv(ML_TARGET_CSV, low_memory=False)
+            
+            # 8/25の古い欠損データを一度削除して綺麗なデータで入れ替える
+            old_data = old_data[old_data['date'] != date_formatted]
+            
             combined = pd.concat([old_data, new_data]).drop_duplicates(subset=['race_id', '馬番'], keep='last')
         else:
             combined = new_data
             
         combined.to_csv(ML_TARGET_CSV, index=False, encoding='utf-8-sig')
         print(f"💾 {ML_TARGET_CSV} を更新しました！")
-        
-        print("\n🧠 AIモデルを自動再学習中...")
-        subprocess.run(["python", "train_lgbm_model.py"], check=True)
-        
-        print("\n🚀 クラウドへ同期中...")
-        subprocess.run(["git", "add", "."], check=True)
-        subprocess.run(["git", "commit", "-m", f"update: {date_formatted} results & retrain AI"], check=True)
-        subprocess.run(["git", "push", "origin", "main"], check=True)
-        print("🎉 すべての更新が完了しました！")
+        print("🎉 着順の更新が完了しました。続けて python evaluate_yesterday.py を実行してください。")
     else:
         print("⚠️ 取得できるレース結果がありませんでした。")
 

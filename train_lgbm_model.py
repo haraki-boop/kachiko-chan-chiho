@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
@@ -8,6 +7,7 @@ import re
 import optuna
 from sklearn.model_selection import TimeSeriesSplit
 
+# Optunaのログ表示を制限
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 print("🌸 勝ち子ちゃん 純粋確率モデル (Optuna最適化版) 学習スクリプト")
@@ -108,19 +108,17 @@ df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fil
 df['custom_time_index'] = 75.0 - (df['recent_avg_rank_3'].fillna(6.0).clip(1, 14) - 3.0) * 3.5 + (df['斤量'] - 54.0) * 1.5
 df['custom_start_index'] = (12.0 - df['prev_1c'].fillna(8.0).clip(upper=10.0)) * 6.5
 
-# 未来データのリーク防止: 全体の平均ではなく、過去の累積平均を使用
-df['trainer_clean'] = df.get('調教師', df.get('騎手')).astype(str)
-df['jockey_clean'] = df.get('騎手', '').astype(str)
-df['jockey_trainer_combo'] = df['jockey_clean'] + "_" + df['trainer_clean']
+trainer_col = '調教師' if '調教師' in df.columns else '騎手'
+df['trainer_clean'] = df[trainer_col].astype(str)
+df['jockey_trainer_combo'] = df['騎手'].astype(str) + "_" + df['trainer_clean']
 
-# リークしない勝率計算 (Expanding Mean: 過去走のみの累積平均)
-def calc_expanding_win_rate(group_col):
-    df_sorted = df.sort_values(['date', 'race_id'])
-    return df_sorted.groupby(group_col)['target_win'].transform(lambda x: x.shift().expanding().mean()).fillna(0.05)
+trainer_stats = (df[df['target_rank'] == 1.0].groupby('trainer_clean')['target_rank'].count() / df.groupby('trainer_clean')['target_rank'].count()).to_dict()
+combo_stats = (df[df['target_rank'] == 1.0].groupby('jockey_trainer_combo')['target_rank'].count() / df.groupby('jockey_trainer_combo')['target_rank'].count()).to_dict()
+jockey_stats = (df[df['target_rank'] == 1.0].groupby('騎手')['target_rank'].count() / df.groupby('騎手')['target_rank'].count()).to_dict()
 
-df['trainer_win_rate'] = calc_expanding_win_rate('trainer_clean')
-df['jockey_win_rate'] = calc_expanding_win_rate('jockey_clean')
-df['combo_win_rate'] = calc_expanding_win_rate('jockey_trainer_combo')
+df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
+df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
+df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
 
 features = [
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
