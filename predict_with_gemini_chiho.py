@@ -69,8 +69,8 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 28特徴量リスト（学習コードと完全一致）
-DEFAULT_FEATURES = [
+# 学習時と100%同一の28特徴量順序定義（固定）
+FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
     'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
@@ -89,6 +89,13 @@ def format_weight_display(val):
     if pd.isna(val) or str(val).strip() in ["", "-", "nan", "NaN", "None"]: return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
+
+def parse_weight_info(val):
+    if pd.isna(val): return 470.0, 0.0
+    s = str(val).strip()
+    m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s)
+    if m: return float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0
+    return 470.0, 0.0
 
 def load_csv_safe(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
@@ -220,8 +227,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
 
-    race_df['rank_score_raw'] = 0.0
-
+    # 基本数値変換
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
     race_df['distance_num'] = pd.to_numeric(race_df.get('distance'), errors='coerce').fillna(1400)
     race_df['weight_num'] = pd.to_numeric(race_df.get('斤量'), errors='coerce').fillna(54.0)
@@ -234,25 +240,31 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
     race_df['jockey_trainer_combo'] = race_df['騎手_clean'] + "_" + race_df['trainer_clean']
 
-    race_df['body_weight'] = 470.0
-    race_df['body_weight_diff'] = 0.0
+    # 馬体重情報のパース（実数値の抽出）
+    if '馬体重' in race_df.columns:
+        parsed_w = race_df['馬体重'].apply(parse_weight_info)
+        race_df['body_weight'] = parsed_w.apply(lambda x: x[0])
+        race_df['body_weight_diff'] = parsed_w.apply(lambda x: x[1])
+    else:
+        race_df['body_weight'] = 470.0
+        race_df['body_weight_diff'] = 0.0
 
+    race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
+
+    # 1. 賞金・格付け特徴量（メンバー内比較）
     race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
     race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
     race_df['race_prize_rank'] = race_df['horse_prize_avg'].rank(ascending=False, method='min')
 
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
-    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
-    race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
-    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
-    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
+    # 2. 地域・過去走指標
+    MINAMI_KANTO_CODES = ['42', '43', '44', '45']
+    race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
+    race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
+    race_df['prev_is_minami'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_is_minami', 0))
     race_df['recent_avg_rank_3'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_3', 5.0))
     race_df['recent_avg_rank_5'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_5', 5.0))
-    race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
-    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
-    race_df['prev_is_minami'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_is_minami', 0))
 
     def get_same_dist(row):
         h, d = row['馬名_clean'], row['distance_num']
@@ -264,72 +276,57 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
 
     race_df['same_dist_avg_rank'] = race_df.apply(get_same_dist, axis=1)
     race_df['same_place_avg_rank'] = race_df.apply(get_same_place, axis=1)
-    race_df['bad_baba_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('bad_baba_avg_rank', 5.0))
+    race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
 
-    race_df['斤量'] = race_df['weight_num']
-    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
-    race_df['trainer_win_rate'] = race_df['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
-    race_df['combo_win_rate'] = race_df['jockey_trainer_combo'].apply(lambda x: combo_dict.get(x, 0.05))
-    race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
-    
-    MINAMI_KANTO_CODES = ['42', '43', '44', '45']
-    race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
-    race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
-
+    # 3. 展開・着差・上がり・馬場
+    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
+    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
     race_df['prev_1c'] = race_df['first_corner']
-    race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.0).astype(int)
-    race_df['race_front_runners'] = race_df['is_front_runner'].sum()
-    
-    race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
-    race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
-
+    race_df['corner_diff'] = race_df['first_corner'] - race_df['last_corner']
+    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
     race_df['last_3f_avg_rank'] = race_df['last_3f']
+    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
     race_df['avg_time_diff'] = race_df['time_diff']
-    race_df['kinryo_weight_ratio'] = race_df['斤量'] / 470.0
-    race_df['is_large_weight_change'] = 0
+    race_df['bad_baba_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('bad_baba_avg_rank', 5.0))
     
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
+    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
 
-    if model_data:
-        try:
-            m_feat = DEFAULT_FEATURES
-            if isinstance(model_data, dict) and 'features' in model_data:
-                m_feat = model_data['features']
+    # 4. 人間・枠番・斤量
+    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
+    race_df['trainer_win_rate'] = race_df['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
+    race_df['combo_win_rate'] = race_df['jockey_trainer_combo'].apply(lambda x: combo_dict.get(x, 0.05))
+    race_df['斤量'] = race_df['weight_num']
+    race_df['kinryo_weight_ratio'] = race_df['斤量'] / race_df['body_weight'].clip(lower=350.0)
 
-            # PKLに保存された順位学習モデル（LGBM / XGB / CatBoost）を直接抽出
-            m_lgb = model_data.get('model_rank_lgb') if isinstance(model_data, dict) else None
-            m_xgb = model_data.get('model_rank_xgb') if isinstance(model_data, dict) else None
-            m_cat = model_data.get('model_rank_cat') if isinstance(model_data, dict) else None
+    race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.0).astype(int)
+    race_df['race_front_runners'] = race_df['is_front_runner'].sum()
+    race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
+    race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
+    race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
-            # 旧構造PKLの互換フォロー
-            if not m_lgb and isinstance(model_data, dict):
-                m_lgb = model_data.get('model_place_lgb') or model_data.get('model_win_lgb')
-            if not m_lgb and hasattr(model_data, 'predict'):
-                m_lgb = model_data
+    # 28特徴量の順序を固定して入力行列作成
+    X_input = race_df[FEATURES].astype(float)
 
-            X = race_df.copy()
-            for f in m_feat:
-                if f not in X.columns: X[f] = 0.0
-            
-            X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
-            
-            preds = []
-            if m_lgb and hasattr(m_lgb, 'predict'): preds.append(m_lgb.predict(X_input))
-            if m_xgb and hasattr(m_xgb, 'predict'): preds.append(m_xgb.predict(X_input))
-            if m_cat and hasattr(m_cat, 'predict'): preds.append(m_cat.predict(X_input))
-
-            if preds:
-                race_df['rank_score_raw'] = np.mean(preds, axis=0)
-            else:
-                st.error("⚠️ PKLモデルからの予測値出力に失敗しました。")
-                st.stop()
-        except Exception as e: 
-            st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
-            st.stop()
-    else:
-        st.error("⚠️ エラー: AIモデルがロードされていないため、スコア計算を停止します。")
+    if not model_data or not isinstance(model_data, dict):
+        st.error("⚠️ エラー: AIモデルファイルが正常にロードされていません。")
         st.stop()
+
+    m_lgb = model_data.get('model_rank_lgb')
+    m_xgb = model_data.get('model_rank_xgb')
+    m_cat = model_data.get('model_rank_cat')
+
+    if not m_lgb or not m_xgb or not m_cat:
+        st.error("⚠️ AIモデル（.pkl）内に LambdaMART モデル（LGB/XGB/CatBoost）が不足しています。python train_ensemble_model.py を実行してモデルを作成してください。")
+        st.stop()
+
+    # 3つのLambdaMARTランクモデルによる決定論的推論
+    s_lgb = m_lgb.predict(X_input)
+    s_xgb = m_xgb.predict(X_input)
+    s_cat = m_cat.predict(X_input)
+
+    race_df['rank_score_raw'] = (s_lgb + s_xgb + s_cat) / 3.0
 
     if bias_dict:
         race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
@@ -547,7 +544,7 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 
 🎯 注目馬解説 (3連単・3連複の観点で)
 ◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬名（理由）
+◯ 対抗: 馬番・馬name（理由）
 ▲ 単穴: 馬番・馬名（理由）
 △ 連下: 馬番・馬名（理由）
 ☆ 穴馬: 馬番・馬名（理由）
