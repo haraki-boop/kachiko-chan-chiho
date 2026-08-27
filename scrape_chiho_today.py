@@ -18,14 +18,14 @@ def clean_text(text):
 
 def get_today_chiho_races():
     JST = timezone(timedelta(hours=+9), 'JST')
-    # 🔥 修正①: 実行日の「1日前（昨日）」のデータを取得するように変更
-    target_dt = datetime.now(JST) - timedelta(days=1)
+    # 🔥 当日（今日）のデータを自動取得するように変更
+    today_dt = datetime.now(JST)
     
-    date_str = target_dt.strftime("%Y-%m-%d")
-    year = target_dt.strftime("%Y")
-    mmdd = target_dt.strftime("%m%d")
+    date_str = today_dt.strftime("%Y-%m-%d")
+    year = today_dt.strftime("%Y")
+    mmdd = today_dt.strftime("%m%d")
     
-    print(f"🌸 指定日（昨日）の地方競馬データを取得中... ({date_str})")
+    print(f"🌸 今日の地方競馬データを取得中... ({date_str})")
     headers = {"User-Agent": "Mozilla/5.0"}
     all_races = []
 
@@ -74,8 +74,6 @@ def get_today_chiho_races():
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
                     
-                    # 🔥 修正②: 不安定な「馬体重」のスクレイピング処理を完全に削除しました
-                    
                     odds_td = row.find("td", id=re.compile(r'odds-', re.I))
                     odds = clean_text(odds_td.text) if odds_td else "15.0"
                     if odds in ["---", "", "0.0"]: odds = "15.0"
@@ -100,4 +98,4 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（馬体重は除外しています）")
+        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（当日データ／枠番あり／馬体重除外）")

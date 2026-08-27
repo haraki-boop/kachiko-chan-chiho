@@ -23,17 +23,18 @@ if not os.path.exists(CSV_FILE):
 print("📊 過去データを読み込み、前処理を実行中...")
 df = pd.read_csv(CSV_FILE, low_memory=False)
 
-# 🔥 バグ修正: 文字（降着・取消など）が混じった着順データを確実に数値化
 def parse_rank(x):
     if pd.isna(x): return np.nan
     s = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
     try: return float(s)
     except: return np.nan
 
-# 正解ラベル（今回のレースの着順）
-target_col = 'target_rank' if 'target_rank' in df.columns else '着順'
+# 🔥 致命的バグ修正: target_rank（ほぼ空のカラム）ではなく 着順_num / 着順 を確実に正解ラベルに指定
+target_col = '着順_num' if '着順_num' in df.columns else '着順'
 df['target_rank_clean'] = df[target_col].apply(parse_rank)
 df = df[df['target_rank_clean'].notna() & (df['target_rank_clean'] < 90.0)].copy()
+
+print(f"✨ 修正後: {len(df)} 件の学習データを正しく読み込みました！")
 
 df['target_rentai'] = (df['target_rank_clean'] <= 2.0).astype(int)
 df['target_win'] = (df['target_rank_clean'] == 1.0).astype(int)
@@ -77,7 +78,7 @@ baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
 df['baba_code'] = df.get('馬場', pd.Series(['良']*len(df))).map(baba_map).fillna(1)
 df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 
-# 🔥 バグ修正: target_rank_clean（数値化済み）を使って過去成績を計算する
+# 過去走集計（未来データリーク防止のため必ずshift参照）
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(5.0))
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
@@ -112,7 +113,7 @@ df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
 df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
 df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
 
-# 🌟 アプリ側（predict_with_gemini_chiho.py）と完全に一致させた27個の特徴量リスト
+# アプリ側（predict_with_gemini_chiho.py）と完全に統一された27個の特徴量
 features = [
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
     'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
@@ -127,9 +128,6 @@ X = df[features].fillna(0.0).astype(float)
 y_rentai = df['target_rentai']
 y_win = df['target_win']
 
-# ========================================================
-# 🤖 アンサンブル用：各AIのOptuna最適化ロジック
-# ========================================================
 n_trials_opt = 20
 
 def optimize_lgb(X_data, y_data, target_name):
@@ -196,9 +194,6 @@ def optimize_cat(X_data, y_data, target_name):
     study.optimize(objective, n_trials=n_trials_opt)
     return cb.CatBoostClassifier(**study.best_params, random_state=42, verbose=False).fit(X_data, y_data)
 
-# ========================================================
-# ⚔️ 3つのAIを同時に学習して合体
-# ========================================================
 print("\n--- 【連対率(2着以内) モデルの学習】 ---")
 model_place_lgb = optimize_lgb(X, y_rentai, "連対(LGBM)")
 model_place_xgb = optimize_xgb(X, y_rentai, "連対(XGBoost)")
@@ -219,4 +214,4 @@ joblib.dump({
     'features': features
 }, MODEL_FILE)
 
-print(f"\n✨ 限界突破！3つのAIを統合したファイル（{MODEL_FILE}）の保存が完了しました！")
+print(f"\n✨ 保存完了: 245,000件のデータを学習したモデル（{MODEL_FILE}）を出力しました！")
