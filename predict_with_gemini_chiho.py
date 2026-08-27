@@ -69,6 +69,17 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
+# LambdaMARTモデル標準28特徴量リスト
+DEFAULT_FEATURES = [
+    'horse_prize_avg', 'race_prize_relative', 'race_prize_rank', 'is_minami_kanto', 
+    'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 'same_dist_avg_rank', 
+    'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change', 'prev_1c', 
+    'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 
+    'bad_baba_avg_rank', 'is_bad_baba', 'horse_career_runs', 'jockey_win_rate', 
+    'trainer_win_rate', 'combo_win_rate', '斤量', 'body_weight', 
+    'kinryo_weight_ratio', 'distance_num', 'race_front_runners', 'waku_win_rate'
+]
+
 def clean_horse_name(name): 
     if pd.isna(name): return ""
     s = unicodedata.normalize('NFKC', str(name))
@@ -78,13 +89,6 @@ def format_weight_display(val):
     if pd.isna(val) or str(val).strip() in ["", "-", "nan", "NaN", "None"]: return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
-
-def parse_weight_info(val):
-    if pd.isna(val): return 470.0, 0.0
-    s = str(val).strip()
-    m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s)
-    if m: return float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0
-    return 470.0, 0.0
 
 def load_csv_safe(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
@@ -299,19 +303,30 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
             elif hasattr(model_data, 'predict'):
                 active_models.append(model_data)
 
-            # 特徴量リストの自動フォールバック補正
+            # 多層構造からの自動属性抽出
             if not m_feat and active_models:
-                first_m = active_models[0]
-                if hasattr(first_m, 'feature_name_'):
-                    m_feat = list(first_m.feature_name_)
-                elif hasattr(first_m, 'booster_') and hasattr(first_m.booster_, 'feature_name'):
-                    m_feat = first_m.booster_.feature_name()
-                elif hasattr(first_m, 'get_booster') and hasattr(first_m.get_booster(), 'feature_names'):
-                    m_feat = first_m.get_booster().feature_names
-                elif hasattr(first_m, 'feature_names_'):
-                    m_feat = list(first_m.feature_names_)
+                for m_obj in active_models:
+                    if hasattr(m_obj, '_Booster') and hasattr(m_obj._Booster, 'feature_name'):
+                        m_feat = m_obj._Booster.feature_name()
+                        break
+                    elif hasattr(m_obj, 'booster_') and hasattr(m_obj.booster_, 'feature_name'):
+                        m_feat = m_obj.booster_.feature_name()
+                        break
+                    elif hasattr(m_obj, 'feature_name_'):
+                        m_feat = list(m_obj.feature_name_)
+                        break
+                    elif hasattr(m_obj, 'feature_names_'):
+                        m_feat = list(m_obj.feature_names_)
+                        break
+                    elif hasattr(m_obj, 'get_booster') and hasattr(m_obj.get_booster(), 'feature_names'):
+                        m_feat = m_obj.get_booster().feature_names
+                        break
 
-            if m_feat and active_models:
+            # 最終フォールバック（標準28特徴量）
+            if not m_feat:
+                m_feat = DEFAULT_FEATURES
+
+            if active_models:
                 X = race_df.copy()
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
@@ -321,7 +336,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                 preds = [m.predict(X_input) for m in active_models]
                 race_df['rank_score_raw'] = np.mean(preds, axis=0)
             else:
-                st.error("⚠️ AIモデル（.pkl）内に適合するモデルまたは特徴量リストが見つかりません。")
+                st.error("⚠️ AIモデル（.pkl）内に予測可能なモデルが見つかりません。")
                 st.stop()
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
