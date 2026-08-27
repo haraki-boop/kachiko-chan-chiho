@@ -16,19 +16,16 @@ def clean_text(text):
     if not text: return ""
     return re.sub(r'[\s\u3000]+', '', str(text)).strip()
 
-def extract_horse_weight(text):
-    # 馬体重の「450(+2)」または「450」形式だけを厳格に抽出
-    m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(text))
-    return m.group(0) if m else ""
-
 def get_today_chiho_races():
     JST = timezone(timedelta(hours=+9), 'JST')
-    today_dt = datetime.now(JST)
-    date_str = today_dt.strftime("%Y-%m-%d")
-    year = today_dt.strftime("%Y")
-    mmdd = today_dt.strftime("%m%d")
+    # 🔥 修正①: 実行日の「1日前（昨日）」のデータを取得するように変更
+    target_dt = datetime.now(JST) - timedelta(days=1)
     
-    print(f"🌸 今日の地方競馬データを取得中... ({date_str})")
+    date_str = target_dt.strftime("%Y-%m-%d")
+    year = target_dt.strftime("%Y")
+    mmdd = target_dt.strftime("%m%d")
+    
+    print(f"🌸 指定日（昨日）の地方競馬データを取得中... ({date_str})")
     headers = {"User-Agent": "Mozilla/5.0"}
     all_races = []
 
@@ -68,6 +65,7 @@ def get_today_chiho_races():
                     cols = row.find_all("td")
                     if len(cols) < 7: continue
                     
+                    wakuban = clean_text(cols[0].text)
                     umaban = clean_text(cols[1].text)
                     if not umaban.isdigit(): continue 
                     
@@ -76,9 +74,7 @@ def get_today_chiho_races():
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
                     
-                    # 💡 馬体重のみを抽出
-                    raw_weight = clean_text(cols[8].text) if len(cols) > 8 else ""
-                    horse_weight = extract_horse_weight(raw_weight)
+                    # 🔥 修正②: 不安定な「馬体重」のスクレイピング処理を完全に削除しました
                     
                     odds_td = row.find("td", id=re.compile(r'odds-', re.I))
                     odds = clean_text(odds_td.text) if odds_td else "15.0"
@@ -90,8 +86,8 @@ def get_today_chiho_races():
                     all_races.append({
                         "date": date_str, "race_id": str(race_id), "place_name": place_name,
                         "r_num": r_num, "race_name": race_name, "distance": distance,
-                        "馬番": umaban, "馬名": horse_name, "性齢": sei_rei,
-                        "斤量": kinryo, "騎手": jockey, "馬体重": horse_weight,
+                        "枠番": wakuban, "馬番": umaban, "馬名": horse_name, "性齢": sei_rei,
+                        "斤量": kinryo, "騎手": jockey,
                         "単勝": odds, "人気": pop
                     })
                 time.sleep(0.2)
@@ -104,4 +100,4 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件のデータを正常化して保存しました！")
+        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（馬体重は除外しています）")
