@@ -69,7 +69,7 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🔥 修正箇所①: 馬名や騎手名のクリーニングを強力にし、完全一致させる
+# 🔥 修正①: 馬名の照合を確実にするため、全角/半角スペース・記号を完全に除去
 def clean_horse_name(name): 
     if pd.isna(name): return ""
     s = unicodedata.normalize('NFKC', str(name))
@@ -93,7 +93,7 @@ def parse_rank(x):
     try: return float(s)
     except: return 5.0
 
-# 🔥 修正箇所②: CSV読み込み時の型エラーによるサイレント失敗を防止
+# 🔥 修正②: DtypeWarningを回避しつつ確実にデータを読み込む
 def load_csv_safe(path, dtype_dict=None):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
@@ -117,6 +117,8 @@ def load_model():
 
 df_past = load_csv_safe(ML_TARGET_CSV, {'race_id': str})
 df_future = load_csv_safe(FUTURE_CSV, {'race_id': str, '馬番': str})
+
+# 🔥 修正③: 履歴データの読み込み（ダッシュボードエラーの解消）
 df_history = load_csv_safe(HISTORY_CSV, {'race_id': str})
 
 if df_past.empty:
@@ -213,15 +215,16 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         race_df['horse_weight'] = 470.0
         race_df['weight_diff'] = 0.0
 
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
-    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
-    race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
-    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
-    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
-    race_df['recent_avg_rank_3'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_3', 5.0))
-    race_df['recent_avg_rank_5'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_5', 5.0))
-    race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
-    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
+    # 🔥 修正④: 辞書から過去データを取得。見つからない場合は適切なデフォルト値を入れる
+    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner') if horse_dict.get(x, {}).get('first_corner') is not None else 8.0)
+    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner') if horse_dict.get(x, {}).get('last_corner') is not None else 8.0)
+    race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff') if horse_dict.get(x, {}).get('corner_diff') is not None else 0.0)
+    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f') if horse_dict.get(x, {}).get('last_3f') is not None else 39.0)
+    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff') if horse_dict.get(x, {}).get('time_diff') is not None else 1.5)
+    race_df['recent_avg_rank_3'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_3') if horse_dict.get(x, {}).get('recent_avg_rank_3') is not None else 5.0)
+    race_df['recent_avg_rank_5'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('recent_avg_rank_5') if horse_dict.get(x, {}).get('recent_avg_rank_5') is not None else 5.0)
+    race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev') if horse_dict.get(x, {}).get('days_since_prev') is not None else 14.0)
+    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs') if horse_dict.get(x, {}).get('horse_career_runs') is not None else 5.0)
 
     race_df['斤量'] = race_df['weight_num']
     race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
@@ -293,16 +296,16 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ エラー: AIモデルがロードされていないため、スコア計算を停止します。")
         st.stop()
 
-    # 🔥 修正箇所③: 誤差による100点と0点の暴走を防ぐ安全処理
+    # 🔥 修正⑤: スコア計算時の極小誤差による100点と0点の暴走を防ぐ
     w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
     p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
     
-    if w_max - w_min > 1e-4:
+    if (w_max - w_min) > 1e-4:
         race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min)
     else:
         race_df['win_norm'] = 0.5
         
-    if p_max - p_min > 1e-4:
+    if (p_max - p_min) > 1e-4:
         race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min)
     else:
         race_df['rentai_norm'] = 0.5
@@ -314,7 +317,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         race_df['raw_score'] = race_df['raw_score'] * race_df['bias_multiplier']
 
     r_max, r_min = race_df['raw_score'].max(), race_df['raw_score'].min()
-    if r_max - r_min > 1e-4:
+    if (r_max - r_min) > 1e-4:
         race_df['score_disp'] = (((race_df['raw_score'] - r_min) / (r_max - r_min)) * 100).astype(int)
     else:
         race_df['score_disp'] = 50
