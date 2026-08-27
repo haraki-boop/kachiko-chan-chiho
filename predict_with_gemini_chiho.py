@@ -47,6 +47,7 @@ st.markdown("""
     .badge-tana   { background: linear-gradient(135deg, #2ed573, #7bed9f); }
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; }
+    .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -68,14 +69,13 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🔥 修正①: 長音記号「ー」を消さないように修正（馬名の紐付けバグを解消）
 def clean_horse_name(name): 
     if pd.isna(name): return ""
     s = unicodedata.normalize('NFKC', str(name))
     return re.sub(r'[\s・･._ ]+', '', s).strip()
 
 def format_weight_display(val):
-    if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-": return "-"
+    if pd.isna(val) or str(val).strip() in ["", "-", "nan", "NaN", "None"]: return "-"
     m = re.search(r'\d{3}(?:\([+-]?\d+\))?', str(val))
     return m.group(0) if m else str(val)
 
@@ -86,49 +86,12 @@ def parse_weight_info(val):
     if m: return float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0
     return 470.0, 0.0
 
-def parse_rank(x):
-    if pd.isna(x): return 5.0
-    s = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
-    try: return float(s)
-    except: return 5.0
-
-# 🔥 修正②: 競馬特有の文字列データを純粋な数字に翻訳する専用ルール
-def parse_race_time(val):
-    if pd.isna(val): return np.nan
-    s = str(val).strip()
-    if ':' in s:
-        parts = s.split(':')
-        try: return float(parts[0]) * 60 + float(parts[1])
-        except: return np.nan
-    try: return float(s)
-    except: return np.nan
-
-def parse_margin(val):
-    if pd.isna(val): return np.nan
-    s = str(val).strip()
-    if s in ['ハナ', 'クビ', 'アタマ', '同着']: return 0.0
-    if s == '大差': return 3.0
-    if s in ['取消', '除外', '中止', '落馬', '競止']: return np.nan
-    try: return float(s)
-    except: return np.nan
-
-def parse_corner(val, return_last=False):
-    if pd.isna(val): return np.nan
-    s = str(val).translate(str.maketrans('１２３４５６７８９０', '1234567890'))
-    s = re.sub(r'[^\d\-]', '', s) # 数字とハイフン以外を除去
-    if not s: return np.nan
-    parts = s.split('-')
-    try:
-        return float(parts[-1]) if return_last else float(parts[0])
-    except: return np.nan
-
-# 🔥 修正③: Warningを隠すのではなく、dtype=strで安全に読み込む根本治療
 def load_csv_safe(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
     for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift_jis']:
         try:
-            df = pd.read_csv(path, dtype=str, encoding=enc)
+            df = pd.read_csv(path, encoding=enc, low_memory=False)
             if not df.empty: return df
         except Exception: continue
     return pd.DataFrame()
@@ -155,14 +118,9 @@ if not df_future.empty and 'race_id' in df_future.columns:
     df_future['place_code'] = df_future['race_id'].astype(str).str[4:6]
     df_future['place_name'] = df_future['place_code'].map(NAR_PLACES).fillna("地方")
     df_future['r_num'] = pd.to_numeric(df_future['race_id'].astype(str).str[10:12], errors='coerce').fillna(1).astype(int)
-    df_future['day_label'] = df_future['date'] if 'date' in df_future.columns else datetime.now().strftime("%Y-%m-%d")
+    df_future['day_label'] = df_future['date'].astype(str) if 'date' in df_future.columns else datetime.now().strftime("%Y-%m-%d")
 
 model_data = load_model()
-
-def get_col(df, names):
-    for n in names:
-        if n in df.columns: return df[n]
-    return pd.Series([np.nan]*len(df))
 
 @st.cache_data
 def build_past_dicts(df_p):
@@ -170,56 +128,49 @@ def build_past_dicts(df_p):
     if not df_p.empty:
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
         
-        # 🔥 修正④: 翻訳機を使って文字列を正確に数値化
-        pass_col = get_col(df_p, ['通過順位', '通過順', 'コーナー通過順'])
-        if pass_col.notna().any():
-            df_p['parsed_first_corner'] = pass_col.apply(lambda x: parse_corner(x, False))
-            df_p['parsed_last_corner'] = pass_col.apply(lambda x: parse_corner(x, True))
-        else:
-            df_p['parsed_first_corner'] = pd.to_numeric(get_col(df_p, ['1角', 'first_corner']), errors='coerce')
-            df_p['parsed_last_corner'] = pd.to_numeric(get_col(df_p, ['4角', 'last_corner']), errors='coerce')
-            
-        df_p['parsed_margin'] = get_col(df_p, ['着差', 'time_diff']).apply(parse_margin)
+        df_p['first_corner'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
+        df_p['last_corner'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner'])
+        df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
+        df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
         
-        l3f_col = get_col(df_p, ['上り', 'last_3f'])
-        df_p['parsed_l3f'] = pd.to_numeric(l3f_col.astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce')
-
-        df_p['騎手_clean'] = get_col(df_p, ['騎手']).astype(str).apply(clean_horse_name)
-        trainer_col = get_col(df_p, ['調教師'])
+        df_p['騎手_clean'] = df_p.get('騎手', pd.Series(['']*len(df_p))).astype(str).apply(clean_horse_name)
+        trainer_col = df_p.get('調教師', df_p['騎手_clean'])
         df_p['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
         df_p['jockey_trainer_combo'] = df_p['騎手_clean'] + "_" + df_p['trainer_clean']
 
-        target_col = get_col(df_p, ['着順', 'target_rank'])
-        df_p['target_rank_tmp'] = target_col.apply(parse_rank)
+        rank_col = df_p['着順_num'] if '着順_num' in df_p.columns else df_p.get('着順', pd.Series([5.0]*len(df_p)))
+        df_p['target_rank_tmp'] = pd.to_numeric(rank_col, errors='coerce').fillna(5.0)
         df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
 
         for j, m in df_p.groupby('騎手_clean')['target_win'].mean().items(): jockey_dict[j] = m
         for t, m in df_p.groupby('trainer_clean')['target_win'].mean().items(): trainer_dict[t] = m
         for c, m in df_p.groupby('jockey_trainer_combo')['target_win'].mean().items(): combo_dict[c] = m
 
-        df_p['waku_num_tmp'] = pd.to_numeric(get_col(df_p, ['枠番']), errors='coerce').fillna(0)
-        df_p['place_code_tmp'] = get_col(df_p, ['race_id']).astype(str).str[4:6]
+        df_p['waku_num_tmp'] = pd.to_numeric(df_p.get('枠番'), errors='coerce').fillna(0)
+        df_p['place_code_tmp'] = df_p['race_id'].astype(str).str[4:6]
         df_p['place_waku_combo'] = df_p['place_code_tmp'] + "_" + df_p['waku_num_tmp'].astype(str)
         for w, m in df_p.groupby('place_waku_combo')['target_win'].mean().items(): waku_dict[w] = m
 
         baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
-        df_p['baba_code'] = get_col(df_p, ['馬場']).map(baba_map).fillna(1)
+        df_p['baba_code'] = df_p.get('馬場', pd.Series(['良']*len(df_p))).map(baba_map).fillna(1)
         df_p['is_bad_baba'] = (df_p['baba_code'] >= 3).astype(int)
-        df_p['distance_num'] = pd.to_numeric(get_col(df_p, ['距離', 'distance']), errors='coerce').fillna(1400)
+        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
         
         MINAMI_KANTO_CODES = ['42', '43', '44', '45']
         df_p['is_minami_kanto'] = df_p['place_code_tmp'].isin(MINAMI_KANTO_CODES).astype(int)
 
-        date_col = get_col(df_p, ['date', '日付'])
-        df_p['date_dt'] = pd.to_datetime(date_col, errors='coerce').fillna(pd.to_datetime('2020-01-01'))
-            
+        if 'date' in df_p.columns and df_p['date'].notna().any():
+            df_p['date_dt'] = pd.to_datetime(df_p['date'], errors='coerce').fillna(pd.to_datetime('2020-01-01'))
+        else:
+            df_p['date_dt'] = pd.to_datetime('2020-01-01')
+
         for h, group in df_p.sort_values('date_dt').groupby('馬名_clean'):
             r3 = group.tail(3)
             r5 = group.tail(5)
-            f_c = r3['parsed_first_corner'].fillna(8.0).mean()
-            l_c = r3['parsed_last_corner'].fillna(f_c).mean()
-            l_3f = r3['parsed_l3f'].fillna(39.0).mean()
-            t_diff = r3['parsed_margin'].fillna(1.5).mean()
+            f_c = r3['first_corner'].mean()
+            l_c = r3['last_corner'].mean()
+            l_3f = r3['last_3f'].mean()
+            t_diff = r3['time_diff'].mean()
             
             avg_rank_3 = r3['target_rank_tmp'].mean()
             avg_rank_5 = r5['target_rank_tmp'].mean()
@@ -275,9 +226,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
     race_df['jockey_trainer_combo'] = race_df['騎手_clean'] + "_" + race_df['trainer_clean']
 
-    parsed_w = race_df.get('馬体重', pd.Series(['470']*len(race_df))).apply(parse_weight_info)
-    race_df['horse_weight'] = parsed_w.apply(lambda x: x[0])
-    race_df['weight_diff'] = parsed_w.apply(lambda x: x[1])
+    if '馬体重' in race_df.columns:
+        parsed_w = race_df['馬体重'].apply(parse_weight_info)
+        race_df['horse_weight'] = parsed_w.apply(lambda x: x[0])
+        race_df['weight_diff'] = parsed_w.apply(lambda x: x[1])
+    else:
+        race_df['horse_weight'] = 470.0
+        race_df['weight_diff'] = 0.0
 
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
     race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
@@ -333,6 +288,27 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['custom_time_index'] = 75.0 - (race_df['recent_avg_rank_3'] - 3.0) * 3.5 + (race_df['斤量'] - 54.0) * 1.5
     race_df['custom_start_index'] = (12.0 - race_df['prev_1c'].clip(upper=10.0)) * 6.5
 
+    # 🔥 表記揺れ（エイリアス）カラムの一括セット（モデルとの一致率100%化）
+    alias_map = {
+        'distance': 'distance_num', 'distance_m': 'distance_num',
+        'kinryo': 'weight_num', 'gate_num': 'waku_num', '枠番': 'waku_num',
+        'umaban': '馬番_num', '馬番': '馬番_num',
+        'first_corner': 'first_corner', '1角': 'first_corner', 'prev_1c': 'first_corner',
+        'last_corner': 'last_corner', '4角': 'last_corner',
+        'last_3f': 'last_3f', '上り': 'last_3f', 'last_3f_sec': 'last_3f',
+        'time_diff': 'time_diff', '着差': 'time_diff',
+        'jockey_win_rate': 'jockey_win_rate', '騎手勝率': 'jockey_win_rate',
+        'trainer_win_rate': 'trainer_win_rate', '調教師勝率': 'trainer_win_rate',
+        'target_rank': 'recent_avg_rank_3', 'target_rank_3': 'recent_avg_rank_3',
+        'target_rank_5': 'recent_avg_rank_5',
+        'is_front': 'is_front_runner', 'race_front_count': 'race_front_runners',
+        'custom_time_index_m': 'custom_time_index', 'mid_speed': 'custom_time_index',
+        'custom_pursuit_index': 'custom_start_index', 'custom_last3f_index': 'last_3f'
+    }
+    for alias_col, src_col in alias_map.items():
+        if alias_col not in race_df.columns and src_col in race_df.columns:
+            race_df[alias_col] = race_df[src_col]
+
     race_df['place_prob'] = 0.0
     race_df['win_prob'] = 0.0
     
@@ -348,10 +324,14 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
             
             if m_feat and m_place_lgb:
                 X = race_df.copy()
-                for f in m_feat:
-                    if f not in X.columns: X[f] = 0.0
                 
-                # エラー回避のため確実にfloat化
+                # 🔥 0.0 穴埋めが発生した特徴量を検出・警告表示（完全可視化）
+                missing_feats = [f for f in m_feat if f not in X.columns]
+                if missing_feats:
+                    st.warning(f"⚠️ 警告: 以下の特徴量がアプリ側に存在せず 0.0 補填されました:\n{missing_feats}")
+                    for f in missing_feats:
+                        X[f] = 0.0
+                
                 X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
                 
                 p_lgb = m_place_lgb.predict_proba(X_input)[:, 1]
@@ -573,7 +553,7 @@ with tab_forecast:
                 target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}"
             else:
                 rec_pattern_name = "🛡️ 【3連複・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
-                rec_text = f"上位陣が混戦（{score_diff}点差）なため、1位を軸にしつつ相手を5位まで広げた3連複で高配当を狙います。"
+                rec_text = f"上位陣が混戦（{score_diff}点差）なため、1位を軸にしつつ相手を5位まで広げた3连複で高配当を狙います。"
                 axis_horse = f"{u_1:02d}"
                 target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}"
 
