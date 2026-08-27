@@ -216,7 +216,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
 
-    # 列の初期化（KeyError防止）
     race_df['rank_score_raw'] = 0.0
 
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
@@ -234,7 +233,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['body_weight'] = 470.0
     race_df['body_weight_diff'] = 0.0
 
-    # 格付け・クラス特徴量の算出
     race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
@@ -289,27 +287,41 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
 
-    if model_data and isinstance(model_data, dict):
+    if model_data:
         try:
-            m_feat = model_data.get('features', [])
-            m_lgb = model_data.get('model_rank_lgb')
-            m_xgb = model_data.get('model_rank_xgb')
-            m_cat = model_data.get('model_rank_cat')
-            
-            if m_feat and m_lgb:
+            m_feat, active_models = [], []
+            if isinstance(model_data, dict):
+                m_feat = model_data.get('features') or model_data.get('feature_names') or []
+                for k in ['model_rank_lgb', 'model_rank_xgb', 'model_rank_cat', 'model_rank', 'lgb', 'xgb', 'cat']:
+                    m_obj = model_data.get(k)
+                    if m_obj and hasattr(m_obj, 'predict'):
+                        active_models.append(m_obj)
+            elif hasattr(model_data, 'predict'):
+                active_models.append(model_data)
+
+            # 特徴量リストの自動フォールバック補正
+            if not m_feat and active_models:
+                first_m = active_models[0]
+                if hasattr(first_m, 'feature_name_'):
+                    m_feat = list(first_m.feature_name_)
+                elif hasattr(first_m, 'booster_') and hasattr(first_m.booster_, 'feature_name'):
+                    m_feat = first_m.booster_.feature_name()
+                elif hasattr(first_m, 'get_booster') and hasattr(first_m.get_booster(), 'feature_names'):
+                    m_feat = first_m.get_booster().feature_names
+                elif hasattr(first_m, 'feature_names_'):
+                    m_feat = list(first_m.feature_names_)
+
+            if m_feat and active_models:
                 X = race_df.copy()
                 for f in m_feat:
                     if f not in X.columns: X[f] = 0.0
                 
                 X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
                 
-                s_lgb = m_lgb.predict(X_input) if m_lgb else 0.0
-                s_xgb = m_xgb.predict(X_input) if m_xgb else 0.0
-                s_cat = m_cat.predict(X_input) if m_cat else 0.0
-                
-                race_df['rank_score_raw'] = (s_lgb + s_xgb + s_cat) / 3.0
+                preds = [m.predict(X_input) for m in active_models]
+                race_df['rank_score_raw'] = np.mean(preds, axis=0)
             else:
-                st.error("⚠️ AIモデル（.pkl）内に新しいRankingモデルが見つかりません。python train_ensemble_model.py を再実行してください。")
+                st.error("⚠️ AIモデル（.pkl）内に適合するモデルまたは特徴量リストが見つかりません。")
                 st.stop()
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
