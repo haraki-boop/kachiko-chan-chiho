@@ -113,6 +113,9 @@ def load_model():
 df_past = load_csv_safe(ML_TARGET_CSV, {'race_id': str})
 df_future = load_csv_safe(FUTURE_CSV, {'race_id': str, '馬番': str})
 
+# 🔥 修正箇所: ここで履歴データを読み込む処理を復活させました 🔥
+df_history = load_csv_safe(HISTORY_CSV, {'race_id': str})
+
 if not df_future.empty and 'race_id' in df_future.columns:
     df_future['place_code'] = df_future['race_id'].astype(str).str[4:6]
     df_future['place_name'] = df_future['place_code'].map(NAR_PLACES).fillna("地方")
@@ -448,7 +451,6 @@ with tab_forecast:
             def safe_idx(df, idx):
                 return int(df.iloc[idx]['馬番_num']) if len(df) > idx else int(df.iloc[-1]['馬番_num'])
             
-            # 3連系対応のため上位5頭まで取得
             u_1 = safe_idx(scored_df, 0)
             u_2 = safe_idx(scored_df, 1)
             u_3 = safe_idx(scored_df, 2)
@@ -460,7 +462,6 @@ with tab_forecast:
             front_runners_count = int(scored_df.iloc[0]['race_front_runners']) if 'race_front_runners' in scored_df.columns else 0
             pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 3 else 'ペースは落ち着きそうです。前残り注意。'}"
 
-            # 🔥 3連系特化の判定ロジック 🔥
             if score_diff >= 5:
                 rec_pattern_name = "🎯 【3連単・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
                 rec_text = f"1位のスコアが抜けている（{score_diff}点差）ため、頭固定の3連単で高配当を狙い撃ちします。"
@@ -492,7 +493,6 @@ with tab_forecast:
                 st.stop()
 
             table_summary = []
-            # 解説の対象を上位5頭に拡張
             for idx, row in scored_df.head(5).iterrows():
                 mark = get_mark(idx)
                 if mark != "消":
