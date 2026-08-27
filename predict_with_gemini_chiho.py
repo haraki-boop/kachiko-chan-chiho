@@ -69,7 +69,7 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# LambdaMARTモデル標準28特徴量リスト
+# 標準特徴量28種
 DEFAULT_FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank', 'is_minami_kanto', 
     'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 'same_dist_avg_rank', 
@@ -294,16 +294,17 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     if model_data:
         try:
             m_feat, active_models = [], []
+            
+            # PKL内のすべての値を検証し、.predictメソッドを持つオブジェクトを完全自動集元
             if isinstance(model_data, dict):
                 m_feat = model_data.get('features') or model_data.get('feature_names') or []
-                for k in ['model_rank_lgb', 'model_rank_xgb', 'model_rank_cat', 'model_rank', 'lgb', 'xgb', 'cat']:
-                    m_obj = model_data.get(k)
-                    if m_obj and hasattr(m_obj, 'predict'):
-                        active_models.append(m_obj)
+                for val in model_data.values():
+                    if hasattr(val, 'predict'):
+                        active_models.append(val)
             elif hasattr(model_data, 'predict'):
                 active_models.append(model_data)
 
-            # 多層構造からの自動属性抽出
+            # 特徴量リストが存在しない場合の内部属性自動補元
             if not m_feat and active_models:
                 for m_obj in active_models:
                     if hasattr(m_obj, '_Booster') and hasattr(m_obj._Booster, 'feature_name'):
@@ -318,11 +319,8 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                     elif hasattr(m_obj, 'feature_names_'):
                         m_feat = list(m_obj.feature_names_)
                         break
-                    elif hasattr(m_obj, 'get_booster') and hasattr(m_obj.get_booster(), 'feature_names'):
-                        m_feat = m_obj.get_booster().feature_names
-                        break
 
-            # 最終フォールバック（標準28特徴量）
+            # 最終セーフティネット
             if not m_feat:
                 m_feat = DEFAULT_FEATURES
 
@@ -333,10 +331,11 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                 
                 X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
                 
+                # 検出された全モデルの予測値を統合
                 preds = [m.predict(X_input) for m in active_models]
                 race_df['rank_score_raw'] = np.mean(preds, axis=0)
             else:
-                st.error("⚠️ AIモデル（.pkl）内に予測可能なモデルが見つかりません。")
+                st.error("⚠️ AIモデル（.pkl）内に予測可能なモデルオブジェクトが見つかりません。")
                 st.stop()
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
