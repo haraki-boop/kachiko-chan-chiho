@@ -142,7 +142,6 @@ def build_past_dicts(df_p):
         df_p['target_rank_tmp'] = pd.to_numeric(df_p[rank_col], errors='coerce').fillna(5.0)
         df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
 
-        # 賞金データの抽出
         df_p['prize_num'] = pd.to_numeric(df_p.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
 
         for j, m in df_p.groupby('騎手_clean')['target_win'].mean().items(): jockey_dict[j] = m
@@ -175,7 +174,6 @@ def build_past_dicts(df_p):
             avg_rank_3 = r3['target_rank_tmp'].mean()
             avg_rank_5 = r5['target_rank_tmp'].mean()
             
-            # クラス・賞金平均
             horse_prize_avg = r5['prize_num'].mean()
             
             dist_dict = group.groupby('distance_num')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
@@ -217,6 +215,9 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     if target_df.empty: return None
     race_df = target_df[target_df['race_id'].astype(str) == str(race_id_target)].copy().reset_index(drop=True)
     if race_df.empty: return None
+
+    # 列の初期化（KeyError防止）
+    race_df['rank_score_raw'] = 0.0
 
     race_df['place_code'] = pd.to_numeric(race_df['race_id'].astype(str).str[4:6], errors='coerce').fillna(0.0)
     race_df['distance_num'] = pd.to_numeric(race_df.get('distance'), errors='coerce').fillna(1400)
@@ -302,14 +303,14 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                 
                 X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
                 
-                # Rankingスコア推論（高スコアほど上位評価）
-                s_lgb = m_lgb.predict(X_input)
-                s_xgb = m_xgb.predict(X_input)
-                s_cat = m_cat.predict(X_input)
+                s_lgb = m_lgb.predict(X_input) if m_lgb else 0.0
+                s_xgb = m_xgb.predict(X_input) if m_xgb else 0.0
+                s_cat = m_cat.predict(X_input) if m_cat else 0.0
                 
-                # 3モデルの予測ランクスコアを統合
                 race_df['rank_score_raw'] = (s_lgb + s_xgb + s_cat) / 3.0
-                
+            else:
+                st.error("⚠️ AIモデル（.pkl）内に新しいRankingモデルが見つかりません。python train_ensemble_model.py を再実行してください。")
+                st.stop()
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
             st.stop()
@@ -321,7 +322,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
         race_df['rank_score_raw'] = race_df['rank_score_raw'] * race_df['bias_multiplier']
 
-    # スコア100点満点化
     r_max, r_min = race_df['rank_score_raw'].max(), race_df['rank_score_raw'].min()
     if (r_max - r_min) > 1e-4:
         race_df['score_disp'] = (((race_df['rank_score_raw'] - r_min) / (r_max - r_min)) * 100).astype(int)
@@ -534,7 +534,7 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 
 🎯 注目馬解説 (3連単・3連複の観点で)
 ◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬name（理由）
+◯ 対抗: 馬番・馬名（理由）
 ▲ 単穴: 馬番・馬名（理由）
 △ 連下: 馬番・馬名（理由）
 ☆ 穴馬: 馬番・馬名（理由）
