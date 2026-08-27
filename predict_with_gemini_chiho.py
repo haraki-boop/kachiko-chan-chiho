@@ -132,12 +132,25 @@ if not df_future.empty and 'race_id' in df_future.columns:
 
 model_data = load_model()
 
+def parse_rank(x):
+    if pd.isna(x): return np.nan
+    s = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
+    try: return float(s)
+    except: return np.nan
+
 @st.cache_data
 def build_past_dicts(df_p):
     jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict = {}, {}, {}, {}, {}
     if not df_p.empty:
         df_p['馬名_clean'] = df_p['馬名'].astype(str).apply(clean_horse_name)
         
+        rank_col = '着順_num' if '着順_num' in df_p.columns else '着順'
+        df_p['target_rank_tmp'] = df_p[rank_col].apply(parse_rank)
+        df_p = df_p[df_p['target_rank_tmp'].notna() & (df_p['target_rank_tmp'] < 90.0)].copy()
+
+        df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
+        df_p['target_rentai'] = (df_p['target_rank_tmp'] <= 2.0).astype(int)
+
         df_p['first_corner'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
         df_p['last_corner'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner'])
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
@@ -147,11 +160,6 @@ def build_past_dicts(df_p):
         trainer_col = df_p.get('調教師', df_p['騎手_clean'])
         df_p['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
         df_p['jockey_trainer_combo'] = df_p['騎手_clean'] + "_" + df_p['trainer_clean']
-
-        rank_col = '着順_num' if '着順_num' in df_p.columns else '着順'
-        df_p['target_rank_tmp'] = pd.to_numeric(df_p[rank_col], errors='coerce').fillna(5.0)
-        df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
-        df_p['target_rentai'] = (df_p['target_rank_tmp'] <= 2.0).astype(int)
 
         df_p['prize_num'] = pd.to_numeric(df_p.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
 
@@ -251,14 +259,12 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
 
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-    # 1. 賞金・格付け特徴量
     race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
     race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
     race_df['race_prize_rank'] = race_df['horse_prize_avg'].rank(ascending=False, method='min')
 
-    # 2. 地域・過去走指標
     MINAMI_KANTO_CODES = ['42', '43', '44', '45']
     race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
     race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
@@ -279,7 +285,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['same_place_avg_rank'] = race_df.apply(get_same_place, axis=1)
     race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
 
-    # 3. 展開・着差・上がり・馬場
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
     race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
     race_df['prev_1c'] = race_df['first_corner']
@@ -294,7 +299,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
     race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
 
-    # 4. 人間・枠番・斤量
     race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
     race_df['trainer_win_rate'] = race_df['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
     race_df['combo_win_rate'] = race_df['jockey_trainer_combo'].apply(lambda x: combo_dict.get(x, 0.05))
@@ -307,13 +311,11 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
-    # 表示用指列表の整形
     race_df['recent_avg_rank_display'] = race_df['recent_avg_rank_3'].round(1)
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
     race_df['prize_avg_display'] = race_df['horse_prize_avg'].round(0).astype(int)
 
-    # 28特徴量行列の作成
     X_input = race_df[FEATURES].astype(float)
 
     if not model_data or not isinstance(model_data, dict):
