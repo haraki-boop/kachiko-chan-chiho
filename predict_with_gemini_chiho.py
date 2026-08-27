@@ -313,20 +313,21 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ エラー: AIモデルファイルが正常にロードされていません。")
         st.stop()
 
-    m_lgb = model_data.get('model_rank_lgb')
-    m_xgb = model_data.get('model_rank_xgb')
-    m_cat = model_data.get('model_rank_cat')
+    # 新旧キーに対応した柔軟な抽出（0補填なし）
+    m_lgb = model_data.get('model_rank_lgb') or model_data.get('model_place_lgb') or model_data.get('model_win_lgb')
+    m_xgb = model_data.get('model_rank_xgb') or model_data.get('model_place_xgb') or model_data.get('model_win_xgb')
+    m_cat = model_data.get('model_rank_cat') or model_data.get('model_place_cat') or model_data.get('model_win_cat')
 
-    if not m_lgb or not m_xgb or not m_cat:
-        st.error("⚠️ AIモデル（.pkl）内に LambdaMART モデル（LGB/XGB/CatBoost）が不足しています。python train_ensemble_model.py を実行してモデルを作成してください。")
+    preds = []
+    if m_lgb and hasattr(m_lgb, 'predict'): preds.append(m_lgb.predict(X_input))
+    if m_xgb and hasattr(m_xgb, 'predict'): preds.append(m_xgb.predict(X_input))
+    if m_cat and hasattr(m_cat, 'predict'): preds.append(m_cat.predict(X_input))
+
+    if preds:
+        race_df['rank_score_raw'] = np.mean(preds, axis=0)
+    else:
+        st.error("⚠️ AIモデル（.pkl）から予測値を出力できませんでした。サイドバーの『キャッシュ完全クリア＆リロード』を押してください。")
         st.stop()
-
-    # 3つのLambdaMARTランクモデルによる決定論的推論
-    s_lgb = m_lgb.predict(X_input)
-    s_xgb = m_xgb.predict(X_input)
-    s_cat = m_cat.predict(X_input)
-
-    race_df['rank_score_raw'] = (s_lgb + s_xgb + s_cat) / 3.0
 
     if bias_dict:
         race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
@@ -544,7 +545,7 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 
 🎯 注目馬解説 (3連単・3連複の観点で)
 ◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬name（理由）
+◯ 対抗: 馬番・馬名（理由）
 ▲ 単穴: 馬番・馬名（理由）
 △ 連下: 馬番・馬名（理由）
 ☆ 穴馬: 馬番・馬名（理由）
