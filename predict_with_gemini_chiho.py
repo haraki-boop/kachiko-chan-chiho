@@ -69,8 +69,11 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
+# 🔥 修正箇所①: 馬名や騎手名のクリーニングを強力にし、完全一致させる
 def clean_horse_name(name): 
-    return re.sub(r'[\s\u3000]+', '', unicodedata.normalize('NFKC', str(name))) if not pd.isna(name) else ""
+    if pd.isna(name): return ""
+    s = unicodedata.normalize('NFKC', str(name))
+    return re.sub(r'[\s・･.\-ー_ ]+', '', s).strip()
 
 def format_weight_display(val):
     if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "-": return "-"
@@ -90,11 +93,13 @@ def parse_rank(x):
     try: return float(s)
     except: return 5.0
 
+# 🔥 修正箇所②: CSV読み込み時の型エラーによるサイレント失敗を防止
 def load_csv_safe(path, dtype_dict=None):
-    if not os.path.exists(path) or os.path.getsize(path) == 0: return pd.DataFrame()
+    if not os.path.exists(path) or os.path.getsize(path) == 0: 
+        return pd.DataFrame()
     for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift_jis']:
         try:
-            df = pd.read_csv(path, dtype=dtype_dict, encoding=enc)
+            df = pd.read_csv(path, dtype=dtype_dict, encoding=enc, low_memory=False)
             if not df.empty: return df
         except Exception: continue
     return pd.DataFrame()
@@ -112,9 +117,10 @@ def load_model():
 
 df_past = load_csv_safe(ML_TARGET_CSV, {'race_id': str})
 df_future = load_csv_safe(FUTURE_CSV, {'race_id': str, '馬番': str})
-
-# 🔥 修正箇所: ここで履歴データを読み込む処理を復活させました 🔥
 df_history = load_csv_safe(HISTORY_CSV, {'race_id': str})
+
+if df_past.empty:
+    st.error("⚠️ 過去データ (ml_target_data_chiho.csv) の読み込みに失敗しました。AIが馬の能力を判定できません。")
 
 if not df_future.empty and 'race_id' in df_future.columns:
     df_future['place_code'] = df_future['race_id'].astype(str).str[4:6]
@@ -287,11 +293,19 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ エラー: AIモデルがロードされていないため、スコア計算を停止します。")
         st.stop()
 
+    # 🔥 修正箇所③: 誤差による100点と0点の暴走を防ぐ安全処理
     w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
     p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
     
-    race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min + 1e-6)
-    race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min + 1e-6)
+    if w_max - w_min > 1e-4:
+        race_df['win_norm'] = (race_df['win_prob'] - w_min) / (w_max - w_min)
+    else:
+        race_df['win_norm'] = 0.5
+        
+    if p_max - p_min > 1e-4:
+        race_df['rentai_norm'] = (race_df['place_prob'] - p_min) / (p_max - p_min)
+    else:
+        race_df['rentai_norm'] = 0.5
     
     race_df['raw_score'] = (race_df['win_norm'] * 0.60) + (race_df['rentai_norm'] * 0.30)
     
@@ -300,7 +314,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         race_df['raw_score'] = race_df['raw_score'] * race_df['bias_multiplier']
 
     r_max, r_min = race_df['raw_score'].max(), race_df['raw_score'].min()
-    if r_max > r_min:
+    if r_max - r_min > 1e-4:
         race_df['score_disp'] = (((race_df['raw_score'] - r_min) / (r_max - r_min)) * 100).astype(int)
     else:
         race_df['score_disp'] = 50
