@@ -69,15 +69,15 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 標準特徴量28種
+# 28特徴量リスト（学習コードと完全一致）
 DEFAULT_FEATURES = [
-    'horse_prize_avg', 'race_prize_relative', 'race_prize_rank', 'is_minami_kanto', 
-    'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 'same_dist_avg_rank', 
-    'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change', 'prev_1c', 
-    'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 
-    'bad_baba_avg_rank', 'is_bad_baba', 'horse_career_runs', 'jockey_win_rate', 
-    'trainer_win_rate', 'combo_win_rate', '斤量', 'body_weight', 
-    'kinryo_weight_ratio', 'distance_num', 'race_front_runners', 'waku_win_rate'
+    'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
+    'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
+    'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
+    'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
+    'horse_career_runs', 'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
+    '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
+    'race_front_runners', 'waku_win_rate'
 ]
 
 def clean_horse_name(name): 
@@ -293,49 +293,36 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
 
     if model_data:
         try:
-            m_feat, active_models = [], []
+            m_feat = DEFAULT_FEATURES
+            if isinstance(model_data, dict) and 'features' in model_data:
+                m_feat = model_data['features']
+
+            # PKLに保存された順位学習モデル（LGBM / XGB / CatBoost）を直接抽出
+            m_lgb = model_data.get('model_rank_lgb') if isinstance(model_data, dict) else None
+            m_xgb = model_data.get('model_rank_xgb') if isinstance(model_data, dict) else None
+            m_cat = model_data.get('model_rank_cat') if isinstance(model_data, dict) else None
+
+            # 旧構造PKLの互換フォロー
+            if not m_lgb and isinstance(model_data, dict):
+                m_lgb = model_data.get('model_place_lgb') or model_data.get('model_win_lgb')
+            if not m_lgb and hasattr(model_data, 'predict'):
+                m_lgb = model_data
+
+            X = race_df.copy()
+            for f in m_feat:
+                if f not in X.columns: X[f] = 0.0
             
-            # PKL内のすべての値を検証し、.predictメソッドを持つオブジェクトを完全自動集元
-            if isinstance(model_data, dict):
-                m_feat = model_data.get('features') or model_data.get('feature_names') or []
-                for val in model_data.values():
-                    if hasattr(val, 'predict'):
-                        active_models.append(val)
-            elif hasattr(model_data, 'predict'):
-                active_models.append(model_data)
+            X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
+            
+            preds = []
+            if m_lgb and hasattr(m_lgb, 'predict'): preds.append(m_lgb.predict(X_input))
+            if m_xgb and hasattr(m_xgb, 'predict'): preds.append(m_xgb.predict(X_input))
+            if m_cat and hasattr(m_cat, 'predict'): preds.append(m_cat.predict(X_input))
 
-            # 特徴量リストが存在しない場合の内部属性自動補元
-            if not m_feat and active_models:
-                for m_obj in active_models:
-                    if hasattr(m_obj, '_Booster') and hasattr(m_obj._Booster, 'feature_name'):
-                        m_feat = m_obj._Booster.feature_name()
-                        break
-                    elif hasattr(m_obj, 'booster_') and hasattr(m_obj.booster_, 'feature_name'):
-                        m_feat = m_obj.booster_.feature_name()
-                        break
-                    elif hasattr(m_obj, 'feature_name_'):
-                        m_feat = list(m_obj.feature_name_)
-                        break
-                    elif hasattr(m_obj, 'feature_names_'):
-                        m_feat = list(m_obj.feature_names_)
-                        break
-
-            # 最終セーフティネット
-            if not m_feat:
-                m_feat = DEFAULT_FEATURES
-
-            if active_models:
-                X = race_df.copy()
-                for f in m_feat:
-                    if f not in X.columns: X[f] = 0.0
-                
-                X_input = X[m_feat].fillna(0.0).apply(pd.to_numeric, errors='coerce').fillna(0.0).astype(float)
-                
-                # 検出された全モデルの予測値を統合
-                preds = [m.predict(X_input) for m in active_models]
+            if preds:
                 race_df['rank_score_raw'] = np.mean(preds, axis=0)
             else:
-                st.error("⚠️ AIモデル（.pkl）内に予測可能なモデルオブジェクトが見つかりません。")
+                st.error("⚠️ PKLモデルからの予測値出力に失敗しました。")
                 st.stop()
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
