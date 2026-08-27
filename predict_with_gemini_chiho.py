@@ -69,7 +69,6 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🔥 修正①: 馬名の照合を確実にするため、全角/半角スペース・記号を完全に除去
 def clean_horse_name(name): 
     if pd.isna(name): return ""
     s = unicodedata.normalize('NFKC', str(name))
@@ -93,7 +92,6 @@ def parse_rank(x):
     try: return float(s)
     except: return 5.0
 
-# 🔥 修正②: DtypeWarningを回避しつつ確実にデータを読み込む
 def load_csv_safe(path, dtype_dict=None):
     if not os.path.exists(path) or os.path.getsize(path) == 0: 
         return pd.DataFrame()
@@ -117,8 +115,6 @@ def load_model():
 
 df_past = load_csv_safe(ML_TARGET_CSV, {'race_id': str})
 df_future = load_csv_safe(FUTURE_CSV, {'race_id': str, '馬番': str})
-
-# 🔥 修正③: 履歴データの読み込み（ダッシュボードエラーの解消）
 df_history = load_csv_safe(HISTORY_CSV, {'race_id': str})
 
 if df_past.empty:
@@ -215,7 +211,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         race_df['horse_weight'] = 470.0
         race_df['weight_diff'] = 0.0
 
-    # 🔥 修正④: 辞書から過去データを取得。見つからない場合は適切なデフォルト値を入れる
     race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner') if horse_dict.get(x, {}).get('first_corner') is not None else 8.0)
     race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner') if horse_dict.get(x, {}).get('last_corner') is not None else 8.0)
     race_df['corner_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff') if horse_dict.get(x, {}).get('corner_diff') is not None else 0.0)
@@ -289,6 +284,21 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
                 
                 race_df['place_prob'] = (p_lgb + p_xgb + p_cat) / 3.0
                 race_df['win_prob'] = (w_lgb + w_xgb + w_cat) / 3.0
+                
+                # 🔥 修正: 勝率・連対率をレース全体で100%・200%になるよう正規化
+                sum_win = race_df['win_prob'].sum()
+                if sum_win > 0:
+                    race_df['win_prob'] = race_df['win_prob'] / sum_win
+                else:
+                    race_df['win_prob'] = 1.0 / len(race_df)
+                    
+                sum_place = race_df['place_prob'].sum()
+                if sum_place > 0:
+                    race_df['place_prob'] = (race_df['place_prob'] / sum_place) * 2.0
+                    race_df['place_prob'] = race_df['place_prob'].clip(upper=1.0)
+                else:
+                    race_df['place_prob'] = min(1.0, 2.0 / len(race_df))
+                    
         except Exception as e: 
             st.error(f"⚠️ 推論実行中にエラーが発生しました。\n詳細: {e}")
             st.stop()
@@ -296,7 +306,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ エラー: AIモデルがロードされていないため、スコア計算を停止します。")
         st.stop()
 
-    # 🔥 修正⑤: スコア計算時の極小誤差による100点と0点の暴走を防ぐ
     w_max, w_min = race_df['win_prob'].max(), race_df['win_prob'].min()
     p_max, p_min = race_df['place_prob'].max(), race_df['place_prob'].min()
     
