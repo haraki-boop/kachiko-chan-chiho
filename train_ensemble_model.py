@@ -18,7 +18,11 @@ if not os.path.exists(CSV_FILE):
     exit()
 
 print("📊 過去データを読み込み、前処理および格付け・メンバーレベル特徴量を生成中...")
-df = pd.read_csv(CSV_FILE, low_memory=False)
+# utf-8 と cp932 に両対応
+try:
+    df = pd.read_csv(CSV_FILE, low_memory=False, encoding='utf-8')
+except UnicodeDecodeError:
+    df = pd.read_csv(CSV_FILE, low_memory=False, encoding='cp932')
 
 def parse_rank(x):
     if pd.isna(x): return np.nan
@@ -98,6 +102,16 @@ df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(5.0))
 
+# 🌟 【新規追加】独自指数・距離変化の前処理（カンニング防止で過去平均をとる）
+df['custom_time_index'] = pd.to_numeric(df.get('custom_time_index'), errors='coerce').fillna(100.0) # デフォルト値は100近辺と仮定
+df['custom_start_index'] = pd.to_numeric(df.get('custom_start_index'), errors='coerce').fillna(50.0)
+df['custom_last3f_index'] = pd.to_numeric(df.get('custom_last3f_index'), errors='coerce').fillna(50.0)
+df['dist_change_num'] = pd.to_numeric(df.get('dist_change'), errors='coerce').fillna(0.0)
+
+df['prev_time_index_avg'] = df.groupby('馬名_clean')['custom_time_index'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(100.0))
+df['prev_start_index_avg'] = df.groupby('馬名_clean')['custom_start_index'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(50.0))
+df['prev_last3f_index_avg'] = df.groupby('馬名_clean')['custom_last3f_index'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(50.0))
+
 # 過去3走の平均展開データを特徴量として生成（リーク修正）
 df['prev_1c'] = df.groupby('馬名_clean')['first_corner_raw'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
 df['last_corner'] = df.groupby('馬名_clean')['last_corner_raw'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
@@ -133,7 +147,7 @@ set_cumulative_win_rate(df, 'trainer_clean', 'trainer_win_rate')
 set_cumulative_win_rate(df, 'jockey_trainer_combo', 'combo_win_rate')
 set_cumulative_win_rate(df, '騎手', 'jockey_win_rate')
 
-# 特徴量リスト
+# 特徴量リスト (指数データを追加)
 features = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
@@ -141,7 +155,8 @@ features = [
     'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
     'horse_career_runs', 'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
-    'race_front_runners', 'waku_win_rate'
+    'race_front_runners', 'waku_win_rate',
+    'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num' # 🌟 新規追加
 ]
 
 X = df[features].fillna(0.0).astype(float)

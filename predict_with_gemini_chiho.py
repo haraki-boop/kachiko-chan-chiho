@@ -69,6 +69,7 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
+# 🌟 特徴量リストに指数と距離変化を追加
 FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
@@ -76,7 +77,8 @@ FEATURES = [
     'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
     'horse_career_runs', 'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
-    'race_front_runners', 'waku_win_rate'
+    'race_front_runners', 'waku_win_rate',
+    'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num' # 追加
 ]
 
 def clean_horse_name(name): 
@@ -156,6 +158,11 @@ def build_past_dicts(df_p):
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
         df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
         
+        # 🌟 指数データの前処理
+        df_p['custom_time_index'] = pd.to_numeric(df_p.get('custom_time_index'), errors='coerce').fillna(100.0)
+        df_p['custom_start_index'] = pd.to_numeric(df_p.get('custom_start_index'), errors='coerce').fillna(50.0)
+        df_p['custom_last3f_index'] = pd.to_numeric(df_p.get('custom_last3f_index'), errors='coerce').fillna(50.0)
+
         df_p['騎手_clean'] = df_p.get('騎手', pd.Series(['']*len(df_p))).astype(str).apply(clean_horse_name)
         trainer_col = df_p.get('調教師', df_p['騎手_clean'])
         df_p['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
@@ -191,11 +198,17 @@ def build_past_dicts(df_p):
             l_3f = r3['last_3f'].mean()
             t_diff = r3['time_diff'].mean()
             
+            # 🌟 指数の過去3走平均を取得
+            time_idx_avg = r3['custom_time_index'].mean()
+            start_idx_avg = r3['custom_start_index'].mean()
+            last3f_idx_avg = r3['custom_last3f_index'].mean()
+
             avg_rank_3 = r3['target_rank_tmp'].mean()
             avg_rank_5 = r5['target_rank_tmp'].mean()
             rentai_rate = group['target_rentai'].mean()
             
             horse_prize_avg = r5['prize_num_log'].mean()
+            horse_prize_avg_raw = r5['prize_num'].mean()  # 表示用の生の平均
             
             dist_dict = group.groupby('distance_num')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
             place_dict = group.groupby('place_code_tmp')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
@@ -218,13 +231,17 @@ def build_past_dicts(df_p):
                 'recent_avg_rank_3': avg_rank_3,
                 'recent_avg_rank_5': avg_rank_5,
                 'horse_prize_avg': horse_prize_avg,
+                'horse_prize_avg_raw': horse_prize_avg_raw,
                 'horse_rentai_rate': rentai_rate,
                 'days_since_prev': days_since,
                 'horse_career_runs': len(group),
                 'prev_is_minami': prev_is_minami,
                 'dist_dict': dist_dict,
                 'place_dict': place_dict,
-                'bad_baba_avg_rank': bad_baba_mean
+                'bad_baba_avg_rank': bad_baba_mean,
+                'prev_time_index_avg': time_idx_avg, # 🌟 保存
+                'prev_start_index_avg': start_idx_avg, # 🌟 保存
+                'prev_last3f_index_avg': last3f_idx_avg # 🌟 保存
             }
     return jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict
 
@@ -261,6 +278,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
     race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
+    race_df['horse_prize_avg_raw'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg_raw', 0.0))
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
     race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
@@ -295,7 +313,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
     race_df['avg_time_diff'] = race_df['time_diff']
     race_df['bad_baba_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('bad_baba_avg_rank', 5.0))
-    
+
+    # 🌟 予測時に指数と距離変更を呼び出し
+    race_df['prev_time_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_time_index_avg', 100.0))
+    race_df['prev_start_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_start_index_avg', 50.0))
+    race_df['prev_last3f_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
+    race_df['dist_change_num'] = pd.to_numeric(race_df.get('dist_change'), errors='coerce').fillna(0.0)
+
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
     race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
@@ -315,8 +339,9 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['recent_avg_rank_display'] = race_df['recent_avg_rank_3'].round(1)
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
-    race_df['prize_avg_display'] = np.expm1(race_df['horse_prize_avg']).round(0).astype(int)
+    race_df['prize_avg_display'] = race_df['horse_prize_avg_raw'].round(0).astype(int)
 
+    # 🌟 カラム順序をFEATURESと一致させて予測
     X_input = race_df[FEATURES].astype(float)
 
     if not model_data or not isinstance(model_data, dict):
