@@ -40,9 +40,11 @@ def rank_to_relevance(rank):
 
 df['relevance'] = df['target_rank_clean'].apply(rank_to_relevance)
 
-df['first_corner'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
-df['last_corner'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner'])
-df['corner_diff'] = df['first_corner'] - df['last_corner']
+# カンニング防止: 現在のレース結果を raw として保持
+df['first_corner_raw'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
+df['last_corner_raw'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner_raw'])
+df['corner_diff_raw'] = df['first_corner_raw'] - df['last_corner_raw']
+
 df['last_3f'] = pd.to_numeric(df.get('last_3f', df.get('上り')), errors='coerce')
 df['time_diff'] = pd.to_numeric(df.get('time_diff', df.get('着差')), errors='coerce').fillna(1.5)
 df['斤量'] = pd.to_numeric(df.get('斤量'), errors='coerce').fillna(54.0)
@@ -93,7 +95,12 @@ df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 # 成績シフト集計
 df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
 df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(5.0))
-df['prev_1c'] = df.groupby('馬名_clean')['first_corner'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
+
+# 過去3走の平均展開データを特徴量として生成（リーク修正）
+df['prev_1c'] = df.groupby('馬名_clean')['first_corner_raw'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
+df['last_corner'] = df.groupby('馬名_clean')['last_corner_raw'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(8.0))
+df['corner_diff'] = df.groupby('馬名_clean')['corner_diff_raw'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(0.0))
+
 df['last_3f_avg_rank'] = df.groupby('馬名_clean')['last_3f'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(39.0))
 df['avg_time_diff'] = df.groupby('馬名_clean')['time_diff'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(1.5))
 df['bad_baba_avg_rank'] = df[df['is_bad_baba'] == 1].groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
