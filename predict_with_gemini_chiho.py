@@ -318,7 +318,8 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['prev_time_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_time_index_avg', 100.0))
     race_df['prev_start_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_start_index_avg', 50.0))
     race_df['prev_last3f_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
-    race_df['dist_change_num'] = pd.to_numeric(race_df.get('dist_change'), errors='coerce').fillna(0.0)
+    # 【修正箇所】getメソッドのデフォルト値にSeriesを渡し、NaN時のエラーを回避
+    race_df['dist_change_num'] = pd.to_numeric(race_df.get('dist_change', pd.Series([0.0]*len(race_df))), errors='coerce').fillna(0.0)
 
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
