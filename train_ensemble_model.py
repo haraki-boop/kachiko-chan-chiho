@@ -6,6 +6,7 @@ import catboost as cb
 import joblib
 import os
 import re
+import optuna
 
 print("🚀 勝ち子ちゃん 【LambdaMART 順位学習(Ranking) × クラス・格付け特化版】")
 
@@ -55,14 +56,15 @@ df['馬名_clean'] = df['馬名'].astype(str).apply(lambda x: re.sub(r'[\s\u3000
 
 df['date'] = pd.to_datetime(df.get('date', pd.Series(['2020-01-01']*len(df))), errors='coerce')
 
-# 🌟 【新機能】格・賞金・メンバーレベル比較特徴量の生成
+# 🌟 【修正】賞金のスケール調整（対数変換）と格付け特徴量生成
 df['prize_num'] = pd.to_numeric(df.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
-df['horse_prize_avg'] = df.groupby('馬名_clean')['prize_num'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(0.0))
+df['prize_num_log'] = np.log1p(df['prize_num']) # 対数変換でスケールを整える
+df['horse_prize_avg'] = df.groupby('馬名_clean')['prize_num_log'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(0.0))
 
 # 時系列ソート & レースID順に並べ替え（グループ化の必須条件）
 df = df.sort_values(['date', 'race_id']).reset_index(drop=True)
 
-# レース内における各馬の「相対的な格（平均獲得賞金比率）」と「メンバー内格付け順位」
+# レース内における各馬の「相対的な格」と「メンバー内格付け順位」
 df['race_prize_mean'] = df.groupby('race_id')['horse_prize_avg'].transform('mean').clip(lower=0.1)
 df['race_prize_relative'] = df['horse_prize_avg'] / df['race_prize_mean']
 df['race_prize_rank'] = df.groupby('race_id')['horse_prize_avg'].rank(ascending=False, method='min')
@@ -115,21 +117,23 @@ df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fil
 df['is_front_runner'] = (df['prev_1c'] <= 3.0).astype(int)
 df['race_front_runners'] = df.groupby('race_id')['is_front_runner'].transform('sum')
 
+# 🌟 【修正】騎手・枠の勝率計算からターゲットリーク（未来データの混入）を除去し、安全な関数で処理
+df['target_win'] = (df['target_rank_clean'] == 1.0).astype(int)
 df['place_waku_combo'] = df['place_code'].astype(str) + "_" + df['waku_num'].astype(str)
-waku_stats = (df[df['target_rank_clean'] == 1.0].groupby('place_waku_combo')['target_rank_clean'].count() / df.groupby('place_waku_combo')['target_rank_clean'].count()).to_dict()
-df['waku_win_rate'] = df['place_waku_combo'].map(waku_stats).fillna(0.05)
-
-trainer_col = '調教師' if '調教師' in df.columns else '騎手'
-df['trainer_clean'] = df[trainer_col].astype(str)
+df['trainer_clean'] = (df['調教師'] if '調教師' in df.columns else df['騎手']).astype(str)
 df['jockey_trainer_combo'] = df['騎手'].astype(str) + "_" + df['trainer_clean']
-trainer_stats = (df[df['target_rank_clean'] == 1.0].groupby('trainer_clean')['target_rank_clean'].count() / df.groupby('trainer_clean')['target_rank_clean'].count()).to_dict()
-combo_stats = (df[df['target_rank_clean'] == 1.0].groupby('jockey_trainer_combo')['target_rank_clean'].count() / df.groupby('jockey_trainer_combo')['target_rank_clean'].count()).to_dict()
-jockey_stats = (df[df['target_rank_clean'] == 1.0].groupby('騎手')['target_rank_clean'].count() / df.groupby('騎手')['target_rank_clean'].count()).to_dict()
-df['trainer_win_rate'] = df['trainer_clean'].map(trainer_stats).fillna(0.05)
-df['combo_win_rate'] = df['jockey_trainer_combo'].map(combo_stats).fillna(0.05)
-df['jockey_win_rate'] = df['騎手'].map(jockey_stats).fillna(0.05)
 
-# 特徴量リスト（格付け・クラス比較を追加した29指標）
+def set_cumulative_win_rate(dataframe, group_col, out_col):
+    runs = dataframe.groupby(group_col).cumcount()
+    wins = dataframe.groupby(group_col)['target_win'].transform(lambda x: x.shift().cumsum().fillna(0))
+    dataframe[out_col] = np.where(runs > 0, wins / runs, 0.05)
+
+set_cumulative_win_rate(df, 'place_waku_combo', 'waku_win_rate')
+set_cumulative_win_rate(df, 'trainer_clean', 'trainer_win_rate')
+set_cumulative_win_rate(df, 'jockey_trainer_combo', 'combo_win_rate')
+set_cumulative_win_rate(df, '騎手', 'jockey_win_rate')
+
+# 特徴量リスト
 features = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
@@ -143,28 +147,75 @@ features = [
 X = df[features].fillna(0.0).astype(float)
 y_relevance = df['relevance']
 
-# レースごとの頭数（グループ単位）
 groups = df.groupby('race_id', sort=False).size().values
 
 print(f"✨ 全 {len(df)} 件 / {len(groups)} レースのグループ構造で Ranking モデルを学習します...")
 
-# 🌟 LambdaMART Ranking モデルの学習
-print("\n--- 【1/3】 LightGBM Ranker (LambdaMART) 学習中... ---")
-ranker_lgb = lgb.LGBMRanker(
-    objective='lambdarank',
-    metric='ndcg',
-    n_estimators=200,
-    learning_rate=0.03,
-    num_leaves=31,
-    random_state=42
-)
+# 🌟 Optunaによるハイパーパラメータ自動チューニング (LightGBM Ranker)
+def objective(trial):
+    params = {
+        'objective': 'lambdarank',
+        'metric': 'ndcg',
+        'n_estimators': trial.suggest_int('n_estimators', 100, 300),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
+        'num_leaves': trial.suggest_int('num_leaves', 15, 63),
+        'random_state': 42
+    }
+    # 簡易的に交差検証を行う（ここでは時間短縮のため直近20%を評価データとするホールドアウト）
+    train_size = int(len(X) * 0.8)
+    X_train, X_valid = X.iloc[:train_size], X.iloc[train_size:]
+    y_train, y_valid = y_relevance.iloc[:train_size], y_relevance.iloc[train_size:]
+    
+    # グループ情報の分割 (train_sizeに合致するように調整)
+    group_cumsum = np.cumsum(groups)
+    split_idx = np.searchsorted(group_cumsum, train_size)
+    
+    if split_idx == 0 or split_idx == len(groups):
+        return 0.0 # 分割失敗時はスキップ
+    
+    train_groups = groups[:split_idx]
+    valid_groups = groups[split_idx:]
+    
+    # サイズの微調整
+    actual_train_size = int(np.sum(train_groups))
+    X_train = X.iloc[:actual_train_size]
+    y_train = y_relevance.iloc[:actual_train_size]
+    X_valid = X.iloc[actual_train_size:]
+    y_valid = y_relevance.iloc[actual_train_size:]
+
+    model = lgb.LGBMRanker(**params)
+    
+    try:
+        model.fit(
+            X_train, y_train, group=train_groups,
+            eval_set=[(X_valid, y_valid)], eval_group=[valid_groups],
+            eval_at=[5], callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
+        )
+        return model.best_score_['valid_0']['ndcg@5']
+    except Exception as e:
+        print(f"Trial failed: {e}")
+        return 0.0
+
+print("\n--- 🔍 Optuna チューニング実行中 (LightGBM)... ---")
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=10) # 試行回数は調整可能
+
+best_params = study.best_params
+best_params['objective'] = 'lambdarank'
+best_params['metric'] = 'ndcg'
+best_params['random_state'] = 42
+
+print(f"✨ 最適パラメータ発見: {best_params}")
+
+print("\n--- 【1/3】 LightGBM Ranker (LambdaMART) 全データで本番学習中... ---")
+ranker_lgb = lgb.LGBMRanker(**best_params)
 ranker_lgb.fit(X, y_relevance, group=groups)
 
 print("\n--- 【2/3】 XGBoost Ranker (rank:ndcg) 学習中... ---")
 ranker_xgb = xgb.XGBRanker(
     objective='rank:ndcg',
-    n_estimators=200,
-    learning_rate=0.03,
+    n_estimators=best_params['n_estimators'],
+    learning_rate=best_params['learning_rate'],
     max_depth=5,
     random_state=42
 )
@@ -173,8 +224,8 @@ ranker_xgb.fit(X, y_relevance, group=groups)
 print("\n--- 【3/3】 CatBoost Ranker (YetiRank) 学習中... ---")
 ranker_cat = cb.CatBoostRanker(
     loss_function='YetiRank',
-    iterations=200,
-    learning_rate=0.03,
+    iterations=best_params['n_estimators'],
+    learning_rate=best_params['learning_rate'],
     depth=5,
     random_state=42,
     verbose=False

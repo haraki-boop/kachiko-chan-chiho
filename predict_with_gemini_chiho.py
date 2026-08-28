@@ -162,6 +162,7 @@ def build_past_dicts(df_p):
         df_p['jockey_trainer_combo'] = df_p['騎手_clean'] + "_" + df_p['trainer_clean']
 
         df_p['prize_num'] = pd.to_numeric(df_p.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
+        df_p['prize_num_log'] = np.log1p(df_p['prize_num'])
 
         for j, m in df_p.groupby('騎手_clean')['target_win'].mean().items(): jockey_dict[j] = m
         for t, m in df_p.groupby('trainer_clean')['target_win'].mean().items(): trainer_dict[t] = m
@@ -194,7 +195,7 @@ def build_past_dicts(df_p):
             avg_rank_5 = r5['target_rank_tmp'].mean()
             rentai_rate = group['target_rentai'].mean()
             
-            horse_prize_avg = r5['prize_num'].mean()
+            horse_prize_avg = r5['prize_num_log'].mean()
             
             dist_dict = group.groupby('distance_num')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
             place_dict = group.groupby('place_code_tmp')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
@@ -314,7 +315,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['recent_avg_rank_display'] = race_df['recent_avg_rank_3'].round(1)
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
-    race_df['prize_avg_display'] = race_df['horse_prize_avg'].round(0).astype(int)
+    race_df['prize_avg_display'] = np.expm1(race_df['horse_prize_avg']).round(0).astype(int)
 
     X_input = race_df[FEATURES].astype(float)
 
