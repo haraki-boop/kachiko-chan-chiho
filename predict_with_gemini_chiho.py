@@ -69,7 +69,6 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🌟 特徴量リストに指数と距離変化を追加
 FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
@@ -78,7 +77,8 @@ FEATURES = [
     'horse_career_runs', 'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
     'race_front_runners', 'waku_win_rate',
-    'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num' # 追加
+    'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num',
+    'prev_class_weighted_score'
 ]
 
 def clean_horse_name(name): 
@@ -158,7 +158,6 @@ def build_past_dicts(df_p):
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
         df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
         
-        # 🌟 指数データの前処理
         df_p['custom_time_index'] = pd.to_numeric(df_p.get('custom_time_index'), errors='coerce').fillna(100.0)
         df_p['custom_start_index'] = pd.to_numeric(df_p.get('custom_start_index'), errors='coerce').fillna(50.0)
         df_p['custom_last3f_index'] = pd.to_numeric(df_p.get('custom_last3f_index'), errors='coerce').fillna(50.0)
@@ -180,6 +179,9 @@ def build_past_dicts(df_p):
         df_p['place_waku_combo'] = df_p['place_code_tmp'] + "_" + df_p['waku_num_tmp'].astype(str)
         for w, m in df_p.groupby('place_waku_combo')['target_win'].mean().items(): waku_dict[w] = m
 
+        df_p['race_prize_mean'] = df_p.groupby('race_id')['prize_num_log'].transform('mean').clip(lower=0.1)
+        df_p['class_weighted_score'] = np.where(df_p['target_rank_tmp'] <= 3.0, (4.0 - df_p['target_rank_tmp']) * df_p['race_prize_mean'], 0.0)
+
         baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
         df_p['baba_code'] = df_p.get('馬場', pd.Series(['良']*len(df_p))).map(baba_map).fillna(1)
         df_p['is_bad_baba'] = (df_p['baba_code'] >= 3).astype(int)
@@ -198,17 +200,15 @@ def build_past_dicts(df_p):
             l_3f = r3['last_3f'].mean()
             t_diff = r3['time_diff'].mean()
             
-            # 🌟 指数の過去3走平均を取得
             time_idx_avg = r3['custom_time_index'].mean()
             start_idx_avg = r3['custom_start_index'].mean()
             last3f_idx_avg = r3['custom_last3f_index'].mean()
+            class_score_avg = r3['class_weighted_score'].mean()
 
             avg_rank_3 = r3['target_rank_tmp'].mean()
             avg_rank_5 = r5['target_rank_tmp'].mean()
             rentai_rate = group['target_rentai'].mean()
-            
             horse_prize_avg = r5['prize_num_log'].mean()
-            horse_prize_avg_raw = r5['prize_num'].mean()  # 表示用の生の平均
             
             dist_dict = group.groupby('distance_num')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
             place_dict = group.groupby('place_code_tmp')['target_rank_tmp'].apply(lambda x: x.tail(3).mean()).to_dict()
@@ -231,7 +231,6 @@ def build_past_dicts(df_p):
                 'recent_avg_rank_3': avg_rank_3,
                 'recent_avg_rank_5': avg_rank_5,
                 'horse_prize_avg': horse_prize_avg,
-                'horse_prize_avg_raw': horse_prize_avg_raw,
                 'horse_rentai_rate': rentai_rate,
                 'days_since_prev': days_since,
                 'horse_career_runs': len(group),
@@ -239,9 +238,10 @@ def build_past_dicts(df_p):
                 'dist_dict': dist_dict,
                 'place_dict': place_dict,
                 'bad_baba_avg_rank': bad_baba_mean,
-                'prev_time_index_avg': time_idx_avg, # 🌟 保存
-                'prev_start_index_avg': start_idx_avg, # 🌟 保存
-                'prev_last3f_index_avg': last3f_idx_avg # 🌟 保存
+                'prev_time_index_avg': time_idx_avg,
+                'prev_start_index_avg': start_idx_avg,
+                'prev_last3f_index_avg': last3f_idx_avg,
+                'prev_class_weighted_score': class_score_avg
             }
     return jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict
 
@@ -278,7 +278,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
     race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
-    race_df['horse_prize_avg_raw'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg_raw', 0.0))
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
     race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
@@ -314,11 +313,10 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['avg_time_diff'] = race_df['time_diff']
     race_df['bad_baba_avg_rank'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('bad_baba_avg_rank', 5.0))
 
-    # 🌟 予測時に指数と距離変更を呼び出し
     race_df['prev_time_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_time_index_avg', 100.0))
     race_df['prev_start_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_start_index_avg', 50.0))
     race_df['prev_last3f_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
-    # 【修正箇所】getメソッドのデフォルト値にSeriesを渡し、NaN時のエラーを回避
+    race_df['prev_class_weighted_score'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_class_weighted_score', 0.0))
     race_df['dist_change_num'] = pd.to_numeric(race_df.get('dist_change', pd.Series([0.0]*len(race_df))), errors='coerce').fillna(0.0)
 
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
@@ -340,9 +338,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['recent_avg_rank_display'] = race_df['recent_avg_rank_3'].round(1)
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
-    race_df['prize_avg_display'] = race_df['horse_prize_avg_raw'].round(0).astype(int)
 
-    # 🌟 カラム順序をFEATURESと一致させて予測
     X_input = race_df[FEATURES].astype(float)
 
     if not model_data or not isinstance(model_data, dict):
@@ -393,7 +389,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>近3走平均</th><th>連対率</th><th>平均賞金</th><th>AIスコア</th><th>印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>近3走平均</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AIスコア</th><th>印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         mark = get_mark(i)
@@ -410,6 +406,10 @@ def generate_beautiful_table(disp_df):
         
         jockey_str = f"{r.get('騎手', '-')}<br><span style='font-size:0.8em; color:#666;'>({r.get('jockey_win_display', 0.0)}%)</span>"
         
+        t_idx = int(r.get('prev_time_index_avg', 100))
+        s_idx = int(r.get('prev_start_index_avg', 50))
+        idx_str = f"<span style='font-size:0.85em;'><b>{t_idx}</b> / <span style='color:#e67e22;'><b>{s_idx}</b></span></span>"
+
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
 <td style='text-align:left; font-weight:800; color:#5a3d46 !important;'>{r.get('馬名', '-')}</td>
@@ -418,7 +418,7 @@ def generate_beautiful_table(disp_df):
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='color:#5a3d46 !important;'><b>{r.get('recent_avg_rank_display', 5.0)}着</b></td>
 <td style='color:#5a3d46 !important;'><b>{r.get('horse_rentai_display', 0.0)}%</b></td>
-<td style='color:#5a3d46 !important;'><b>{r.get('prize_avg_display', 0)}万円</b></td>
+<td>{idx_str}</td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_disp'])}点</b></td>
 <td><span class='badge-mark {b_cls}'>{mark}</span></td>
 </tr>"""
