@@ -69,7 +69,7 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🌟 ノイズ（着順系）を削除し、失速率とペナルティフラグを追加
+# 🌟 特徴量リスト (ノイズを削除し、ペナルティと失速率を追加済み)
 FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami',
@@ -157,7 +157,7 @@ def build_past_dicts(df_p):
         df_p['first_corner_raw'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
         df_p['last_corner_raw'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner_raw'])
         
-        # 🌟 失速判定フラグを作成（1角→4角で3つ以上落としたか）
+        # 🌟 失速判定フラグ
         df_p['is_stalled'] = (df_p['last_corner_raw'] - df_p['first_corner_raw'] >= 3).astype(int)
 
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
@@ -210,9 +210,7 @@ def build_past_dicts(df_p):
             last3f_idx_avg = r3['custom_last3f_index'].mean()
             class_score_avg = r3['class_weighted_score'].mean()
             
-            # 🌟 過去5走の失速率平均を計算
             stall_rate = r5['is_stalled'].mean()
-
             rentai_rate = group['target_rentai'].mean()
             horse_prize_avg = r5['prize_num_log'].mean()
             
@@ -543,50 +541,19 @@ if st.session_state['selected_race_id'] and not df_future.empty:
         st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 LambdaMART 順位学習版)</div>", unsafe_allow_html=True)
         st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-    if st.button("🎀 Geminiの見解（解説テキスト）を生成する", use_container_width=True):
-        if not api_key_input: 
-            st.error("【設定エラー】APIキーが見つかりません。")
-            st.stop()
+        if st.button("🎀 Gemini独自の予想＆見解を生成する", use_container_width=True):
+            if not api_key_input: 
+                st.error("【設定エラー】APIキーが見つかりません。")
+                st.stop()
 
-        table_summary = []
-        for idx, row in scored_df.head(5).iterrows():
-            mark = get_mark(idx)
-            if mark != "消":
+            # 🌟 上位9頭にデータを拡張・変数エラーを防止
+            table_summary = []
+            for idx, row in scored_df.head(9).iterrows():
                 table_summary.append(
-                    f"印:{mark} | 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | AIスコア:{row['score_disp']}"
+                    f"馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | AIスコア:{row['score_disp']}"
                 )
 
-        sys_inst = f"""あなたは地方競馬の勝ち子ちゃんです。
-Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
-
-競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
-適用中のバイアス: 逃げ {bm.get('逃')}倍, 先行 {bm.get('先')}倍, 差し {bm.get('差')}倍, 追込 {bm.get('追')}倍
-自動判定された買い目戦略: {rec_pattern_name}
-
-【回答の構成】
-🌸 勝ち子ちゃんの展開の見解
-（LambdaMARTランク学習とトラックバイアス係数をどのように反映したかを含めて短評を入れる）
-
-🎯 注目馬解説 (3連単・3連複の観点で)
-◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬名（理由）
-▲ 単穴: 馬番・馬名（理由）
-△ 連下: 馬番・馬名（理由）
-☆ 穴馬: 馬番・馬名（理由）
-"""
-        if st.button("🎀 Gemini独自の予想＆見解を生成する", use_container_width=True):
-        if not api_key_input: 
-            st.error("【設定エラー】APIキーが見つかりません。")
-            st.stop()
-
-        # 🌟 Geminiに「選択の余地」を持たせるため、上位5頭ではなく「上位9頭」のデータを渡す
-        table_summary = []
-        for idx, row in scored_df.head(9).iterrows():
-            table_summary.append(
-                f"馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 近走平均:{row['recent_avg_rank_display']}着 | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | AIスコア:{row['score_disp']}"
-            )
-
-        sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
+            sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
 機械学習AI（LambdaMART）が弾き出したスコア上位9頭のデータをお渡しします。
 あなたの任務は、AIのスコアを『あくまで参考の1つ』とし、本日の馬場バイアスや展開（脚質、同型ペナルティ、失速率など）を加味して、【あなた自身の独自の印（◎, ◯, ▲, △, ☆）】を5頭選んで打つことです。
 AIのスコア順（スコア1位が◎など）にそのまま従う必要はありません。展開が向くと判断した穴馬を独自に抜擢してください。
@@ -607,15 +574,14 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 △ 連下: 馬番・馬名（理由）
 ☆ 穴馬: 馬番・馬名（理由）
 """
-        with st.spinner("🎀 Geminiが独自の印と見解を作成中..."):
-            try:
-                ai_client = genai.Client(api_key=api_key_input)
-                response = ai_client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
-                    # 🌟 Geminiが独自の解釈をしやすくなるように少しだけ温度(temperature)を上げる
-                    config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.5) 
-                )
-                clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
-                st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
-            except Exception as e: st.error(f"エラー: {e}")
+            with st.spinner("🎀 Geminiが独自の印と見解を作成中..."):
+                try:
+                    ai_client = genai.Client(api_key=api_key_input)
+                    response = ai_client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
+                        config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.5) 
+                    )
+                    clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
+                    st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
+                except Exception as e: st.error(f"エラー: {e}")
