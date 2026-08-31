@@ -33,8 +33,6 @@ target_col = '着順_num' if '着順_num' in df.columns else '着順'
 df['target_rank_clean'] = df[target_col].apply(parse_rank)
 df = df[df['target_rank_clean'].notna() & (df['target_rank_clean'] < 90.0)].copy()
 
-# 🌟 【最強ロジック】 1着: 3pt, 2着: 2pt, 3着: 1pt, 4着以下: 0pt に完全修正
-# これによりAIは「3着以内」に入ることだけに全力を注ぎ、4〜5着狙いの優等生を無視します。
 def rank_to_relevance(rank):
     if rank == 1.0: return 3
     elif rank == 2.0: return 2
@@ -43,7 +41,6 @@ def rank_to_relevance(rank):
 
 df['relevance'] = df['target_rank_clean'].apply(rank_to_relevance)
 
-# カンニング防止: 現在のレース結果を raw として保持
 df['first_corner_raw'] = pd.to_numeric(df.get('first_corner', df.get('1角')), errors='coerce').fillna(8.0)
 df['last_corner_raw'] = pd.to_numeric(df.get('last_corner', df.get('4角')), errors='coerce').fillna(df['first_corner_raw'])
 df['corner_diff_raw'] = df['first_corner_raw'] - df['last_corner_raw']
@@ -55,10 +52,8 @@ df['馬番_num'] = pd.to_numeric(df.get('馬番'), errors='coerce').fillna(0)
 df['waku_num'] = pd.to_numeric(df.get('枠番'), errors='coerce').fillna(0)
 df['distance_num'] = pd.to_numeric(df.get('distance'), errors='coerce').fillna(1400)
 df['馬名_clean'] = df['馬名'].astype(str).apply(lambda x: re.sub(r'[\s\u3000]+', '', str(x)))
-
 df['date'] = pd.to_datetime(df.get('date', pd.Series(['2020-01-01']*len(df))), errors='coerce')
 
-# 賞金のスケール調整と格付け
 df['prize_num'] = pd.to_numeric(df.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
 df['prize_num_log'] = np.log1p(df['prize_num'])
 df['horse_prize_avg'] = df.groupby('馬名_clean')['prize_num_log'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(0.0))
@@ -94,20 +89,18 @@ baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
 df['baba_code'] = df.get('馬場', pd.Series(['良']*len(df))).map(baba_map).fillna(1)
 df['is_bad_baba'] = (df['baba_code'] >= 3).astype(int)
 
-df['recent_avg_rank_3'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
-df['recent_avg_rank_5'] = df.groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(5.0))
+# 🌟 新規追加1：バテやすさ（失速率）フラグ
+# 1角から4角にかけてポジションを3つ以上落としていたら失速と判定[cite: 4]
+df['is_stalled'] = (df['last_corner_raw'] - df['first_corner_raw'] >= 3).astype(int)
+df['prev_stall_rate'] = df.groupby('馬名_clean')['is_stalled'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean().fillna(0.0))
 
-# 🌟 【新規追加】「どの階級で1〜3着を取ったか」を評価する格付けスコア
-# 1〜3着の場合のみ、（4 - 着順）× レースの格（平均賞金）をスコア化
 df['class_weighted_score'] = np.where(
     df['target_rank_clean'] <= 3.0, 
     (4.0 - df['target_rank_clean']) * df['race_prize_mean'], 
     0.0
 )
-# 過去3走の「格付け加味スコア」の平均（カンニング防止のshift処理済み）
 df['prev_class_weighted_score'] = df.groupby('馬名_clean')['class_weighted_score'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(0.0))
 
-# 指数・距離変化の過去平均処理
 df['custom_time_index'] = pd.to_numeric(df.get('custom_time_index'), errors='coerce').fillna(100.0)
 df['custom_start_index'] = pd.to_numeric(df.get('custom_start_index'), errors='coerce').fillna(50.0)
 df['custom_last3f_index'] = pd.to_numeric(df.get('custom_last3f_index'), errors='coerce').fillna(50.0)
@@ -123,10 +116,6 @@ df['corner_diff'] = df.groupby('馬名_clean')['corner_diff_raw'].transform(lamb
 
 df['last_3f_avg_rank'] = df.groupby('馬名_clean')['last_3f'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(39.0))
 df['avg_time_diff'] = df.groupby('馬名_clean')['time_diff'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(1.5))
-df['bad_baba_avg_rank'] = df[df['is_bad_baba'] == 1].groupby('馬名_clean')['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean())
-df['bad_baba_avg_rank'] = df.groupby('馬名_clean')['bad_baba_avg_rank'].ffill().fillna(df['recent_avg_rank_3'])
-df['same_dist_avg_rank'] = df.groupby(['馬名_clean', 'distance_num'])['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
-df['same_place_avg_rank'] = df.groupby(['馬名_clean', 'place_code'])['target_rank_clean'].transform(lambda x: x.shift().rolling(3, min_periods=1).mean().fillna(5.0))
 df['prev_date'] = df.groupby('馬名_clean')['date'].shift()
 df['days_since_prev'] = (df['date'] - df['prev_date']).dt.days.fillna(14.0)
 df['horse_career_runs'] = df.groupby('馬名_clean').cumcount()
@@ -134,6 +123,10 @@ df['prev_is_minami'] = df.groupby('馬名_clean')['is_minami_kanto'].shift().fil
 
 df['is_front_runner'] = (df['prev_1c'] <= 3.0).astype(int)
 df['race_front_runners'] = df.groupby('race_id')['is_front_runner'].transform('sum')
+
+# 🌟 新規追加2：展開の食い合いペナルティフラグ
+# 自分が逃げ・先行で、なおかつレースに同型が3頭以上いるか[cite: 4]
+df['high_pace_penalty'] = ((df['is_front_runner'] == 1) & (df['race_front_runners'] >= 3)).astype(int)
 
 df['target_win'] = (df['target_rank_clean'] == 1.0).astype(int)
 df['place_waku_combo'] = df['place_code'].astype(str) + "_" + df['waku_num'].astype(str)
@@ -150,16 +143,19 @@ set_cumulative_win_rate(df, 'trainer_clean', 'trainer_win_rate')
 set_cumulative_win_rate(df, 'jockey_trainer_combo', 'combo_win_rate')
 set_cumulative_win_rate(df, '騎手', 'jockey_win_rate')
 
+# 🌟 ノイズ（平均着順系）を全削除し、新規データを追加
 features = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
-    'is_minami_kanto', 'prev_is_minami', 'recent_avg_rank_3', 'recent_avg_rank_5', 
-    'same_dist_avg_rank', 'same_place_avg_rank', 'days_since_prev', 'is_large_weight_change',
-    'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'bad_baba_avg_rank', 'is_bad_baba',
+    'is_minami_kanto', 'prev_is_minami',
+    # 削除: 'recent_avg_rank_3', 'recent_avg_rank_5', 'same_dist_avg_rank', 'same_place_avg_rank', 'bad_baba_avg_rank'
+    'days_since_prev', 'is_large_weight_change',
+    'prev_1c', 'last_corner', 'corner_diff', 'last_3f_avg_rank', 'avg_time_diff', 'is_bad_baba',
     'horse_career_runs', 'jockey_win_rate', 'trainer_win_rate', 'combo_win_rate',
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
     'race_front_runners', 'waku_win_rate',
     'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num',
-    'prev_class_weighted_score' # 🌟 追加した階級評価
+    'prev_class_weighted_score', 
+    'prev_stall_rate', 'high_pace_penalty' # 🌟 追加した展開・なだれ込み評価
 ]
 
 X = df[features].fillna(0.0).astype(float)
@@ -169,14 +165,13 @@ groups = df.groupby('race_id', sort=False).size().values
 
 print(f"✨ 全 {len(df)} 件 / {len(groups)} レースのグループ構造で 3連系特化モデル を学習します...")
 
-# 🌟 Optunaによるハイパーパラメータ自動チューニング
 def objective(trial):
     params = {
         'objective': 'lambdarank',
         'metric': 'ndcg',
         'n_estimators': trial.suggest_int('n_estimators', 100, 300),
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
-        'num_leaves': trial.suggest_int('num_leaves', 15, 63),
+        'num_leaves': trial.suggest_int('num_leaves', 15, 40), # 葉の数も少し絞って過学習防止
         'random_state': 42
     }
     train_size = int(len(X) * 0.8)
@@ -195,7 +190,6 @@ def objective(trial):
 
     model = lgb.LGBMRanker(**params)
     try:
-        # 評価基準を上位3頭（eval_at=[3]）に設定
         model.fit(
             X_train, y_train, group=train_groups,
             eval_set=[(X_valid, y_valid)], eval_group=[valid_groups],
@@ -216,7 +210,7 @@ best_params['random_state'] = 42
 
 print(f"✨ 最適パラメータ発見: {best_params}")
 
-print("\n--- 【1/3】 LightGBM Ranker (3連系特化版) 本番学習中... ---")
+print("\n--- 【1/3】 LightGBM Ranker 本番学習中... ---")
 ranker_lgb = lgb.LGBMRanker(**best_params)
 ranker_lgb.fit(X, y_relevance, group=groups)
 
