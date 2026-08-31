@@ -574,13 +574,47 @@ Markdownの見出しタグ（###や---など）は使わず、絵文字混じり
 △ 連下: 馬番・馬名（理由）
 ☆ 穴馬: 馬番・馬名（理由）
 """
-        with st.spinner("🎀 分析の見解を作成中..."):
+        if st.button("🎀 Gemini独自の予想＆見解を生成する", use_container_width=True):
+        if not api_key_input: 
+            st.error("【設定エラー】APIキーが見つかりません。")
+            st.stop()
+
+        # 🌟 Geminiに「選択の余地」を持たせるため、上位5頭ではなく「上位9頭」のデータを渡す
+        table_summary = []
+        for idx, row in scored_df.head(9).iterrows():
+            table_summary.append(
+                f"馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 近走平均:{row['recent_avg_rank_display']}着 | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | AIスコア:{row['score_disp']}"
+            )
+
+        sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
+機械学習AI（LambdaMART）が弾き出したスコア上位9頭のデータをお渡しします。
+あなたの任務は、AIのスコアを『あくまで参考の1つ』とし、本日の馬場バイアスや展開（脚質、同型ペナルティ、失速率など）を加味して、【あなた自身の独自の印（◎, ◯, ▲, △, ☆）】を5頭選んで打つことです。
+AIのスコア順（スコア1位が◎など）にそのまま従う必要はありません。展開が向くと判断した穴馬を独自に抜擢してください。
+Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
+
+競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
+適用中のバイアス: 逃げ {bm.get('逃')}倍, 先行 {bm.get('先')}倍, 差し {bm.get('差')}倍, 追込 {bm.get('追')}倍
+自動判定された買い目戦略: {rec_pattern_name}
+
+【回答の構成】
+🌸 Geminiの独立展開予想
+（トラックバイアスや展開を踏まえ、なぜ機械学習AIのスコア通りではなく独自の評価をしたかを含める）
+
+🎯 Gemini独自の印と解説
+◎ 本命: 馬番・馬名（理由）
+◯ 対抗: 馬番・馬名（理由）
+▲ 単穴: 馬番・馬名（理由）
+△ 連下: 馬番・馬名（理由）
+☆ 穴馬: 馬番・馬名（理由）
+"""
+        with st.spinner("🎀 Geminiが独自の印と見解を作成中..."):
             try:
                 ai_client = genai.Client(api_key=api_key_input)
                 response = ai_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
-                    config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.3)
+                    # 🌟 Geminiが独自の解釈をしやすくなるように少しだけ温度(temperature)を上げる
+                    config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.5) 
                 )
                 clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
                 st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
