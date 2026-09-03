@@ -277,54 +277,84 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
 
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-    race_df['horse_prize_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_prize_avg', 0.0))
+    # 🌟 既存の正しいデータを破壊せず、欠損(NaN)のみを過去データで埋める安全な代入関数
+    def safe_assign(col_name, dict_key, default_val):
+        if col_name in race_df.columns:
+            race_df[col_name] = pd.to_numeric(race_df[col_name], errors='coerce')
+            fallback = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get(dict_key, default_val))
+            race_df[col_name] = race_df[col_name].fillna(fallback)
+        else:
+            race_df[col_name] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get(dict_key, default_val))
+
+    safe_assign('horse_prize_avg', 'horse_prize_avg', 0.0)
+    
     race_mean_prize = race_df['horse_prize_avg'].mean()
     if race_mean_prize < 0.1: race_mean_prize = 0.1
-    race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
-    race_df['race_prize_rank'] = race_df['horse_prize_avg'].rank(ascending=False, method='min')
+    if 'race_prize_relative' not in race_df.columns:
+        race_df['race_prize_relative'] = race_df['horse_prize_avg'] / race_mean_prize
+    if 'race_prize_rank' not in race_df.columns:
+        race_df['race_prize_rank'] = race_df['horse_prize_avg'].rank(ascending=False, method='min')
 
     MINAMI_KANTO_CODES = ['42', '43', '44', '45']
     race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
     race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
-    race_df['prev_is_minami'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_is_minami', 0))
     
-    race_df['horse_rentai_rate'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_rentai_rate', 0.0))
-
-    race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
-
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 5.0))
-    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 5.0))
-    race_df['prev_1c'] = race_df['first_corner']
-    race_df['corner_diff'] = race_df['first_corner'] - race_df['last_corner']
-    race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
-    race_df['last_3f_avg_rank'] = race_df['last_3f']
-    race_df['time_diff'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
-    race_df['avg_time_diff'] = race_df['time_diff']
-
-    race_df['prev_time_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_time_index_avg', 100.0))
-    race_df['prev_start_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_start_index_avg', 50.0))
-    race_df['prev_last3f_index_avg'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
-    race_df['prev_class_weighted_score'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_class_weighted_score', 0.0))
+    safe_assign('prev_is_minami', 'prev_is_minami', 0)
+    safe_assign('horse_rentai_rate', 'horse_rentai_rate', 0.0)
+    safe_assign('days_since_prev', 'days_since_prev', 14.0)
     
-    race_df['prev_stall_rate'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_stall_rate', 0.0))
+    safe_assign('first_corner', 'first_corner', 5.0)
+    safe_assign('last_corner', 'last_corner', 5.0)
+    
+    if 'prev_1c' not in race_df.columns:
+        race_df['prev_1c'] = race_df['first_corner']
+    else:
+        race_df['prev_1c'] = pd.to_numeric(race_df['prev_1c'], errors='coerce').fillna(race_df['first_corner'])
+        
+    if 'corner_diff' not in race_df.columns:
+        race_df['corner_diff'] = race_df['first_corner'] - race_df['last_corner']
+        
+    safe_assign('last_3f', 'last_3f', 39.0)
+    if 'last_3f_avg_rank' not in race_df.columns:
+        race_df['last_3f_avg_rank'] = race_df['last_3f']
+        
+    safe_assign('time_diff', 'time_diff', 1.5)
+    if 'avg_time_diff' not in race_df.columns:
+        race_df['avg_time_diff'] = race_df['time_diff']
+
+    safe_assign('prev_time_index_avg', 'prev_time_index_avg', 100.0)
+    safe_assign('prev_start_index_avg', 'prev_start_index_avg', 50.0)
+    safe_assign('prev_last3f_index_avg', 'prev_last3f_index_avg', 50.0)
+    safe_assign('prev_class_weighted_score', 'prev_class_weighted_score', 0.0)
+    safe_assign('prev_stall_rate', 'prev_stall_rate', 0.0)
+    
     race_df['dist_change_num'] = pd.to_numeric(race_df.get('dist_change', pd.Series([0.0]*len(race_df))), errors='coerce').fillna(0.0)
 
     baba_map = {'良': 1, '稍重': 2, '重': 3, '不良': 4}
     race_df['is_bad_baba'] = 1 if baba_map.get(baba_status, 1) >= 3 else 0
-    race_df['horse_career_runs'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
+    safe_assign('horse_career_runs', 'horse_career_runs', 5.0)
 
-    race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
-    race_df['trainer_win_rate'] = race_df['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
-    race_df['combo_win_rate'] = race_df['jockey_trainer_combo'].apply(lambda x: combo_dict.get(x, 0.05))
+    if 'jockey_win_rate' not in race_df.columns:
+        race_df['jockey_win_rate'] = race_df['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
+    if 'trainer_win_rate' not in race_df.columns:
+        race_df['trainer_win_rate'] = race_df['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
+    if 'combo_win_rate' not in race_df.columns:
+        race_df['combo_win_rate'] = race_df['jockey_trainer_combo'].apply(lambda x: combo_dict.get(x, 0.05))
+
     race_df['斤量'] = race_df['weight_num']
     race_df['kinryo_weight_ratio'] = race_df['斤量'] / race_df['body_weight'].clip(lower=350.0)
 
-    race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.5).astype(int)
+    if 'is_front_runner' not in race_df.columns:
+        race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.5).astype(int)
+        
     race_df['race_front_runners'] = race_df['is_front_runner'].sum()
-    race_df['high_pace_penalty'] = ((race_df['is_front_runner'] == 1) & (race_df['race_front_runners'] >= 3)).astype(int)
+    
+    if 'high_pace_penalty' not in race_df.columns:
+        race_df['high_pace_penalty'] = ((race_df['is_front_runner'] == 1) & (race_df['race_front_runners'] >= 3)).astype(int)
 
     race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
-    race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
+    if 'waku_win_rate' not in race_df.columns:
+        race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
     
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
