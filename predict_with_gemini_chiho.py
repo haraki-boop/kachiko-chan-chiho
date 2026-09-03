@@ -69,7 +69,6 @@ MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# 🌟 特徴量リスト (ノイズを削除し、ペナルティと失速率を追加済み)
 FEATURES = [
     'horse_prize_avg', 'race_prize_relative', 'race_prize_rank',
     'is_minami_kanto', 'prev_is_minami',
@@ -83,10 +82,10 @@ FEATURES = [
     'prev_stall_rate', 'high_pace_penalty' 
 ]
 
-def clean_horse_name(name): 
-    if pd.isna(name): return ""
-    s = unicodedata.normalize('NFKC', str(name))
-    return re.sub(r'[\s・･._ ]+', '', s).strip()
+def clean_horse_name(name_val): 
+    if pd.isna(name_val): return ""
+    s_val = unicodedata.normalize('NFKC', str(name_val))
+    return re.sub(r'[\s・･._\u3000\t\r\n]+', '', s_val).strip()
 
 def format_weight_display(val):
     if pd.isna(val) or str(val).strip() in ["", "-", "nan", "NaN", "None"]: return "-"
@@ -95,8 +94,8 @@ def format_weight_display(val):
 
 def parse_weight_info(val):
     if pd.isna(val): return 470.0, 0.0
-    s = str(val).strip()
-    m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s)
+    s_val = str(val).strip()
+    m = re.search(r'(\d{3})(?:\(([-+]?\d+)\))?', s_val)
     if m: return float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0
     return 470.0, 0.0
 
@@ -137,8 +136,8 @@ model_data = load_model()
 
 def parse_rank(x):
     if pd.isna(x): return np.nan
-    s = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
-    try: return float(s)
+    s_val = str(x).replace('着', '').replace('(', '').replace(')', '').strip()
+    try: return float(s_val)
     except: return np.nan
 
 @st.cache_data
@@ -154,18 +153,17 @@ def build_past_dicts(df_p):
         df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
         df_p['target_rentai'] = (df_p['target_rank_tmp'] <= 2.0).astype(int)
 
-        df_p['first_corner_raw'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(8.0)
+        df_p['first_corner_raw'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(5.0)
         df_p['last_corner_raw'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner_raw'])
         
-        # 🌟 失速判定フラグ
         df_p['is_stalled'] = (df_p['last_corner_raw'] - df_p['first_corner_raw'] >= 3).astype(int)
 
         df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
         df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
         
-        df_p['custom_time_index'] = pd.to_numeric(df_p.get('custom_time_index'), errors='coerce').fillna(100.0)
-        df_p['custom_start_index'] = pd.to_numeric(df_p.get('custom_start_index'), errors='coerce').fillna(50.0)
-        df_p['custom_last3f_index'] = pd.to_numeric(df_p.get('custom_last3f_index'), errors='coerce').fillna(50.0)
+        df_p['custom_time_index'] = pd.to_numeric(df_p.get('custom_time_index'), errors='coerce')
+        df_p['custom_start_index'] = pd.to_numeric(df_p.get('custom_start_index'), errors='coerce')
+        df_p['custom_last3f_index'] = pd.to_numeric(df_p.get('custom_last3f_index'), errors='coerce')
 
         df_p['騎手_clean'] = df_p.get('騎手', pd.Series(['']*len(df_p))).astype(str).apply(clean_horse_name)
         trainer_col = df_p.get('調教師', df_p['騎手_clean'])
@@ -197,7 +195,8 @@ def build_past_dicts(df_p):
 
         df_p['date_dt'] = pd.to_datetime(df_p.get('date'), errors='coerce').fillna(pd.to_datetime('2020-01-01'))
 
-        for h, group in df_p.sort_values('date_dt').groupby('馬名_clean'):
+        sorted_p = df_p.sort_values('date_dt')
+        for h, group in sorted_p.groupby('馬名_clean'):
             r3 = group.tail(3)
             r5 = group.tail(5)
             f_c = r3['first_corner_raw'].mean()
@@ -205,12 +204,18 @@ def build_past_dicts(df_p):
             l_3f = r3['last_3f'].mean()
             t_diff = r3['time_diff'].mean()
             
-            time_idx_avg = r3['custom_time_index'].mean()
-            start_idx_avg = r3['custom_start_index'].mean()
-            last3f_idx_avg = r3['custom_last3f_index'].mean()
-            class_score_avg = r3['class_weighted_score'].mean()
+            time_idx_avg = r3['custom_time_index'].dropna().mean()
+            if pd.isna(time_idx_avg): time_idx_avg = 100.0
             
+            start_idx_avg = r3['custom_start_index'].dropna().mean()
+            if pd.isna(start_idx_avg): start_idx_avg = 50.0
+            
+            last3f_idx_avg = r3['custom_last3f_index'].dropna().mean()
+            if pd.isna(last3f_idx_avg): last3f_idx_avg = 50.0
+
+            class_score_avg = r3['class_weighted_score'].mean()
             stall_rate = r5['is_stalled'].mean()
+            
             rentai_rate = group['target_rentai'].mean()
             horse_prize_avg = r5['prize_num_log'].mean()
             
@@ -221,28 +226,28 @@ def build_past_dicts(df_p):
             days_since = (pd.Timestamp.now() - last_date).days if not pd.isna(last_date) else 14.0
             
             horse_dict[h] = {
-                'first_corner': f_c, 
-                'last_corner': l_c, 
-                'corner_diff': f_c - l_c, 
-                'last_3f': l_3f, 
-                'time_diff': t_diff,
-                'horse_prize_avg': horse_prize_avg,
-                'horse_rentai_rate': rentai_rate,
+                'first_corner': f_c if not pd.isna(f_c) else 5.0, 
+                'last_corner': l_c if not pd.isna(l_c) else 5.0, 
+                'corner_diff': (f_c - l_c) if not pd.isna(f_c - l_c) else 0.0, 
+                'last_3f': l_3f if not pd.isna(l_3f) else 39.0, 
+                'time_diff': t_diff if not pd.isna(t_diff) else 1.5,
+                'horse_prize_avg': horse_prize_avg if not pd.isna(horse_prize_avg) else 0.0,
+                'horse_rentai_rate': rentai_rate if not pd.isna(rentai_rate) else 0.0,
                 'days_since_prev': days_since,
                 'horse_career_runs': len(group),
                 'prev_is_minami': prev_is_minami,
                 'prev_time_index_avg': time_idx_avg,
                 'prev_start_index_avg': start_idx_avg,
                 'prev_last3f_index_avg': last3f_idx_avg,
-                'prev_class_weighted_score': class_score_avg,
-                'prev_stall_rate': stall_rate
+                'prev_class_weighted_score': class_score_avg if not pd.isna(class_score_avg) else 0.0,
+                'prev_stall_rate': stall_rate if not pd.isna(stall_rate) else 0.0
             }
     return jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict
 
 jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict = build_past_dicts(df_past)
 
 def get_kyakushitsu(fc): 
-    return "逃" if fc <= 2.0 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
+    return "逃" if fc <= 2.5 else "先" if fc <= 4.5 else "差" if fc <= 7.5 else "追"
 
 def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dict=None):
     if target_df.empty: return None
@@ -254,6 +259,7 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['weight_num'] = pd.to_numeric(race_df.get('斤量'), errors='coerce').fillna(54.0)
     race_df['馬番_num'] = pd.to_numeric(race_df.get('馬番'), errors='coerce').fillna(0)
     race_df['waku_num'] = pd.to_numeric(race_df.get('枠番'), errors='coerce').fillna(0)
+    
     race_df['馬名_clean'] = race_df.get('馬名', pd.Series(['']*len(race_df))).astype(str).apply(clean_horse_name)
     race_df['騎手_clean'] = race_df.get('騎手', pd.Series(['']*len(race_df))).astype(str).apply(clean_horse_name)
     
@@ -281,12 +287,13 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['place_code_str'] = race_df['race_id'].astype(str).str[4:6]
     race_df['is_minami_kanto'] = race_df['place_code_str'].isin(MINAMI_KANTO_CODES).astype(int)
     race_df['prev_is_minami'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_is_minami', 0))
-    race_df['horse_rentai_rate'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_rentai_rate', 0.15))
+    
+    race_df['horse_rentai_rate'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_rentai_rate', 0.0))
 
     race_df['days_since_prev'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('days_since_prev', 14.0))
 
-    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
-    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
+    race_df['first_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 5.0))
+    race_df['last_corner'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 5.0))
     race_df['prev_1c'] = race_df['first_corner']
     race_df['corner_diff'] = race_df['first_corner'] - race_df['last_corner']
     race_df['last_3f'] = race_df['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
@@ -312,19 +319,18 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['斤量'] = race_df['weight_num']
     race_df['kinryo_weight_ratio'] = race_df['斤量'] / race_df['body_weight'].clip(lower=350.0)
 
-    # 🌟 展開ペナルティのリアルタイム計算
-    race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.0).astype(int)
+    race_df['is_front_runner'] = (race_df['prev_1c'] <= 3.5).astype(int)
     race_df['race_front_runners'] = race_df['is_front_runner'].sum()
     race_df['high_pace_penalty'] = ((race_df['is_front_runner'] == 1) & (race_df['race_front_runners'] >= 3)).astype(int)
 
     race_df['place_waku_combo'] = race_df['place_code_str'] + "_" + race_df['waku_num'].astype(str)
     race_df['waku_win_rate'] = race_df['place_waku_combo'].apply(lambda x: waku_dict.get(x, 0.05))
+    
     race_df['脚質'] = race_df['first_corner'].apply(get_kyakushitsu)
 
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
 
-    # 🌟 欠損値処理 (.fillna(0.0)) を確実に適用して予測エラーを防止！
     X_input = race_df[FEATURES].fillna(0.0).astype(float)
 
     if not model_data or not isinstance(model_data, dict):
@@ -546,7 +552,6 @@ if st.session_state['selected_race_id'] and not df_future.empty:
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
 
-            # 🌟 上位9頭にデータを拡張・変数エラーを防止
             table_summary = []
             for idx, row in scored_df.head(9).iterrows():
                 table_summary.append(

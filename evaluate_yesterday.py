@@ -33,6 +33,13 @@ def parse_rank(x):
     try: return float(s)
     except: return np.nan
 
+# 🌟 レースID整形用の強力な関数を追加
+def clean_race_id(val):
+    if pd.isna(val): return ""
+    s = str(val).strip()
+    s = re.sub(r'\.0$', '', s) # float化による.0を削除
+    return s
+
 # 1. 過去データの読み込み & 辞書構築
 try:
     df_result = pd.read_csv(RESULT_FILE, low_memory=False, encoding='utf-8')
@@ -43,6 +50,9 @@ try:
     df_future = pd.read_csv(FUTURE_FILE, low_memory=False, encoding='utf-8')
 except UnicodeDecodeError:
     df_future = pd.read_csv(FUTURE_FILE, low_memory=False, encoding='cp932')
+
+df_result['race_id_clean'] = df_result['race_id'].apply(clean_race_id)
+df_future['race_id_clean'] = df_future['race_id'].apply(clean_race_id)
 
 df_result['馬名_clean'] = df_result['馬名'].astype(str).apply(clean_horse_name)
 df_result['騎手_clean'] = df_result.get('騎手', pd.Series(['']*len(df_result))).astype(str).apply(clean_horse_name)
@@ -56,24 +66,20 @@ df_result['target_win'] = (df_result['target_rank_tmp'] == 1.0).astype(int)
 
 df_result['first_corner_raw'] = pd.to_numeric(df_result.get('first_corner', df_result.get('1角')), errors='coerce').fillna(8.0)
 df_result['last_corner_raw'] = pd.to_numeric(df_result.get('last_corner', df_result.get('4角')), errors='coerce').fillna(df_result['first_corner_raw'])
-
-# 🌟 失速判定フラグを作成（1角→4角で3つ以上落としたか）
 df_result['is_stalled'] = (df_result['last_corner_raw'] - df_result['first_corner_raw'] >= 3).astype(int)
 
 df_result['last_3f'] = pd.to_numeric(df_result.get('last_3f', df_result.get('上り')), errors='coerce').fillna(39.0)
 df_result['time_diff'] = pd.to_numeric(df_result.get('time_diff', df_result.get('着差')), errors='coerce').fillna(1.5)
 df_result['distance_num'] = pd.to_numeric(df_result.get('distance'), errors='coerce').fillna(1400)
-df_result['place_code_tmp'] = df_result['race_id'].astype(str).str[4:6]
+df_result['place_code_tmp'] = df_result['race_id_clean'].str[4:6]
 
-# 指数データと賞金データの前処理
 df_result['custom_time_index'] = pd.to_numeric(df_result.get('custom_time_index'), errors='coerce').fillna(100.0)
 df_result['custom_start_index'] = pd.to_numeric(df_result.get('custom_start_index'), errors='coerce').fillna(50.0)
 df_result['custom_last3f_index'] = pd.to_numeric(df_result.get('custom_last3f_index'), errors='coerce').fillna(50.0)
 df_result['prize_num'] = pd.to_numeric(df_result.get('賞金(万円)', 0), errors='coerce').fillna(0.0)
 df_result['prize_num_log'] = np.log1p(df_result['prize_num'])
 
-# 🌟 階級格付けスコアの計算
-df_result['race_prize_mean'] = df_result.groupby('race_id')['prize_num_log'].transform('mean').clip(lower=0.1)
+df_result['race_prize_mean'] = df_result.groupby('race_id_clean')['prize_num_log'].transform('mean').clip(lower=0.1)
 df_result['class_weighted_score'] = np.where(df_result['target_rank_tmp'] <= 3.0, (4.0 - df_result['target_rank_tmp']) * df_result['race_prize_mean'], 0.0)
 
 MINAMI_KANTO_CODES = ['42', '43', '44', '45']
@@ -101,20 +107,16 @@ for h, group in df_result.sort_values('date_dt').groupby('馬名_clean'):
     l_c = r3['last_corner_raw'].mean()
     l_3f = r3['last_3f'].mean()
     t_diff = r3['time_diff'].mean()
-    avg_rank_3 = r3['target_rank_tmp'].mean()
-    avg_rank_5 = r5['target_rank_tmp'].mean()
     
     time_idx_avg = r3['custom_time_index'].mean()
     start_idx_avg = r3['custom_start_index'].mean()
     last3f_idx_avg = r3['custom_last3f_index'].mean()
     horse_prize_avg = r5['prize_num_log'].mean()
     class_score_avg = r3['class_weighted_score'].mean()
-    
-    # 🌟 過去5走の失速率平均
     stall_rate = r5['is_stalled'].mean()
 
     bad_baba_mean = group[group['is_bad_baba'] == 1]['target_rank_tmp'].tail(3).mean()
-    if pd.isna(bad_baba_mean): bad_baba_mean = avg_rank_3
+    if pd.isna(bad_baba_mean): bad_baba_mean = r3['target_rank_tmp'].mean()
 
     last_row = group.iloc[-1]
     prev_is_minami = last_row.get('is_minami_kanto', 0)
@@ -128,7 +130,7 @@ for h, group in df_result.sort_values('date_dt').groupby('馬名_clean'):
         'prev_time_index_avg': time_idx_avg, 'prev_start_index_avg': start_idx_avg, 
         'prev_last3f_index_avg': last3f_idx_avg, 'horse_prize_avg': horse_prize_avg,
         'prev_class_weighted_score': class_score_avg,
-        'prev_stall_rate': stall_rate # 🌟 保存
+        'prev_stall_rate': stall_rate
     }
 
 # 2. モデルロード
@@ -144,7 +146,6 @@ if not m_lgb and not m_xgb and not m_cat:
     exit()
 
 # 3. 出馬表（df_future）へ特徴量を正確に結合
-df_future['race_id_clean'] = df_future['race_id'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 df_future['馬名_clean'] = df_future['馬名'].astype(str).apply(clean_horse_name)
 df_future['騎手_clean'] = df_future.get('騎手', pd.Series(['']*len(df_future))).astype(str).apply(clean_horse_name)
 trainer_col = df_future.get('調教師', df_future['騎手_clean'])
@@ -183,7 +184,6 @@ df_future['horse_career_runs'] = df_future['馬名_clean'].apply(lambda x: horse
 df_future['斤量'] = pd.to_numeric(df_future.get('斤量'), errors='coerce').fillna(54.0)
 df_future['kinryo_weight_ratio'] = df_future['斤量'] / df_future['body_weight'].clip(lower=350.0)
 
-# 🌟 展開ペナルティの計算
 df_future['is_front_runner'] = (df_future['prev_1c'] <= 3.0).astype(int)
 df_future['race_front_runners'] = df_future.groupby('race_id_clean')['is_front_runner'].transform('sum')
 df_future['high_pace_penalty'] = ((df_future['is_front_runner'] == 1) & (df_future['race_front_runners'] >= 3)).astype(int)
@@ -205,13 +205,12 @@ df_future['prev_start_index_avg'] = df_future['馬名_clean'].apply(lambda x: ho
 df_future['prev_last3f_index_avg'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
 df_future['dist_change_num'] = pd.to_numeric(df_future.get('dist_change', pd.Series([0.0]*len(df_future))), errors='coerce').fillna(0.0)
 
-# 🌟 不足していた特徴量（階級評価スコア、過去失速率）の抽出
 df_future['prev_class_weighted_score'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_class_weighted_score', 0.0))
 df_future['prev_stall_rate'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_stall_rate', 0.0))
 
 df_future['馬番_num'] = pd.to_numeric(df_future.get('馬番'), errors='coerce').fillna(0)
 
-# 4. 推論実行（欠損値を0.0で補完）
+# 4. 推論実行
 X_future = df_future[features].fillna(0.0).astype(float)
 
 preds = []
@@ -249,7 +248,6 @@ for race_id, group in df_future.groupby('race_id_clean'):
         
     bets_dict[race_id] = {'type': bet_type, 'bets': bets}
 
-df_result['race_id_clean'] = df_result['race_id'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 df_result['target_rank'] = df_result['target_rank_tmp']
 df_result['馬番_num'] = pd.to_numeric(df_result.get('馬番'), errors='coerce').fillna(0)
 
@@ -287,7 +285,7 @@ for race_id, strat in bets_dict.items():
         
         if bet_type == "3連単" and (a1, a2, a3) in bets:
             is_hit = True
-        elif bet_type == "3连複" and tuple(sorted((a1, a2, a3))) in bets:
+        elif bet_type == "3連複" and tuple(sorted((a1, a2, a3))) in bets:
             is_hit = True
                 
         if is_hit:
@@ -304,7 +302,7 @@ for race_id, strat in bets_dict.items():
             
             total_return += payout
             place_code = race_id[4:6]
-            race_num = int(race_id[10:12])
+            race_num = int(race_id[10:12]) if len(race_id) >= 12 else 0
             place_name = NAR_PLACES.get(place_code, "地方")
             hit_details.append(f"🎯 {place_name} {race_num}R [{bet_type}] 的中！ 払戻: {payout:,}円")
 
