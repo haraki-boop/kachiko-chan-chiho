@@ -59,6 +59,9 @@ if 'selected_race_id' not in st.session_state: st.session_state['selected_race_i
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
 if 'bias_multipliers' not in st.session_state: 
     st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0, "差": 1.0, "追": 1.0}
+# 🌟 Geminiの予測結果を保持するセッション状態を追加
+if 'gemini_results' not in st.session_state:
+    st.session_state['gemini_results'] = {}
 
 def set_race_id(rid): st.session_state['selected_race_id'] = rid
 def reset_bias(): st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0, "差": 1.0, "追": 1.0}
@@ -277,7 +280,6 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
 
     race_df['is_large_weight_change'] = (race_df['body_weight_diff'].abs() >= 10.0).astype(int)
 
-    # 🌟 既存の正しいデータを破壊せず、欠損(NaN)のみを過去データで埋める安全な代入関数
     def safe_assign(col_name, dict_key, default_val):
         if col_name in race_df.columns:
             race_df[col_name] = pd.to_numeric(race_df[col_name], errors='coerce')
@@ -409,13 +411,24 @@ def get_mark(idx):
     elif idx == 4: return "☆ 穴馬"
     else: return "消"
 
+# 🌟 表の生成関数をアップデート（AI印とGemini印の2列に拡張）
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AIスコア</th><th>印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AIスコア</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
-        mark = get_mark(i)
-        b_cls = "badge-honmei" if "◎" in mark else "badge-taikou" if "◯" in mark else "badge-tana" if "▲" in mark else "badge-renka" if "△" in mark else "badge-tana" if "☆" in mark else "badge-keshi"
+        # AIの印
+        ai_mark = get_mark(i)
+        b_cls_ai = "badge-honmei" if "◎" in ai_mark else "badge-taikou" if "◯" in ai_mark else "badge-tana" if "▲" in ai_mark else "badge-renka" if "△" in ai_mark else "badge-tana" if "☆" in ai_mark else "badge-keshi"
+        
+        # Geminiの印（新規追加）
+        gem_mark = r.get('gemini_mark', '-')
+        if gem_mark == "-":
+            gem_str = "<span style='color:#ccc; font-weight:bold;'>-</span>"
+        else:
+            b_cls_gem = "badge-honmei" if "◎" in gem_mark else "badge-taikou" if "◯" in gem_mark else "badge-tana" if "▲" in gem_mark else "badge-renka" if "△" in gem_mark else "badge-tana" if "☆" in gem_mark else "badge-keshi"
+            gem_str = f"<span class='badge-mark {b_cls_gem}'>{gem_mark}</span>"
+
         kyaku = r.get('脚質', '-')
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
@@ -441,7 +454,8 @@ def generate_beautiful_table(disp_df):
 <td style='color:#5a3d46 !important;'><b>{r.get('horse_rentai_display', 0.0)}%</b></td>
 <td>{idx_str}</td>
 <td style='color:#5a3d46 !important;'><b>{int(r['score_disp'])}点</b></td>
-<td><span class='badge-mark {b_cls}'>{mark}</span></td>
+<td><span class='badge-mark {b_cls_ai}'>{ai_mark}</span></td>
+<td>{gem_str}</td>
 </tr>"""
     html += "</tbody></table></div>"
     return html
@@ -575,9 +589,20 @@ if st.session_state['selected_race_id'] and not df_future.empty:
         """, unsafe_allow_html=True)
 
         st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 LambdaMART 順位学習版)</div>", unsafe_allow_html=True)
-        st.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-        if st.button("🎀 Gemini独自の予想＆見解を生成する", use_container_width=True):
+        # 🌟 Geminiの印情報をDataFrameに適用
+        scored_df['gemini_mark'] = "-"
+        target_id_str = str(target_id)
+        if target_id_str in st.session_state['gemini_results']:
+            saved_marks = st.session_state['gemini_results'][target_id_str].get('marks', {})
+            for h_num, g_mark in saved_marks.items():
+                scored_df.loc[scored_df['馬番_num'] == h_num, 'gemini_mark'] = g_mark
+
+        # 🌟 表をプレースホルダーに描画（後でリアルタイム更新するため）
+        table_placeholder = st.empty()
+        table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
+
+        if st.button("🎀 Gemini独自の予想（＋α調教・格・実績 重視）を生成", use_container_width=True):
             if not api_key_input: 
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
@@ -585,38 +610,68 @@ if st.session_state['selected_race_id'] and not df_future.empty:
             table_summary = []
             for idx, row in scored_df.head(9).iterrows():
                 table_summary.append(
-                    f"馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | AIスコア:{row['score_disp']}"
+                    f"【Python指数 {idx+1}位】 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | 獲得賞金偏差(格):{row['race_prize_relative']:.2f} | キャリア(実績):{int(row['horse_career_runs'])}戦 | Pythonスコア:{row['score_disp']}点"
                 )
 
             sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
-機械学習AI（LambdaMART）が弾き出したスコア上位9頭のデータをお渡しします。
-あなたの任務は、AIのスコアを『あくまで参考の1つ』とし、本日の馬場バイアスや展開（脚質、同型ペナルティ、失速率など）を加味して、【あなた自身の独自の印（◎, ◯, ▲, △, ☆）】を5頭選んで打つことです。
-AIのスコア順（スコア1位が◎など）にそのまま従う必要はありません。展開が向くと判断した穴馬を独自に抜擢してください。
-Markdownの見出しタグ（###や---など）は使わず、絵文字混じりの綺麗な文章で回答してください。
+Python（機械学習AI）が「過去指数・近走成績」をベースに弾き出したスコア上位9頭のデータをお渡しします。
+
+【🚨あなたの役割と絶対厳守のルール🚨】
+あなたの役割は、Pythonと同じ視点で予想することではありません。
+Pythonのスコアを参考にしつつも、あなたは【＋αの要素（調教の気配、クラスの格、過去の実績、本日の馬場バイアス）】を最優先して、全く別の角度から独自の印（◎, ◯, ▲, △, ☆）を打ってください。
+
+1. Pythonのスコア順（1位〜5位）と全く同じ順序で印を打つことは禁止します。別視点の予想家として独立した評価を下してください。
+2. データ内の「獲得賞金偏差(格)」が高い馬は、近走不振（Pythonスコアが低め）でも「地力・実績上位」として高く評価してください。
+3. 同型ペナルティや失速率、現在の馬場バイアスを加味し、展開が向く伏兵（☆穴馬）を必ず1頭見つけ出してください。
 
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
 適用中のバイアス: 逃げ {bm.get('逃')}倍, 先行 {bm.get('先')}倍, 差し {bm.get('差')}倍, 追込 {bm.get('追')}倍
-自動判定された買い目戦略: {rec_pattern_name}
 
 【回答の構成】
-🌸 Geminiの独立展開予想
-（トラックバイアスや展開を踏まえ、なぜ機械学習AIのスコア通りではなく独自の評価をしたかを含める）
+🌸 Geminiの独自見解（格・実績・展開フォーカス）
+（Pythonの数値だけでは測れない「格」や「展開の利」から、どうレースを読むかを簡潔に）
 
 🎯 Gemini独自の印と解説
-◎ 本命: 馬番・馬名（理由）
-◯ 対抗: 馬番・馬名（理由）
-▲ 単穴: 馬番・馬名（理由）
-△ 連下: 馬番・馬名（理由）
-☆ 穴馬: 馬番・馬名（理由）
+※【重要】システムが馬番を自動抽出するため、必ず以下のフォーマット通りに記述してください。馬番は必ず半角数字にし、[ ]で囲んでください。
+◎ [馬番] 馬名 （調教・格・実績・展開から最も狙える理由）
+◯ [馬番] 馬名 （理由）
+▲ [馬番] 馬名 （理由）
+△ [馬番] 馬名 （理由）
+☆ [馬番] 馬名 （Python評価は低めだが、実績や展開で一発ある理由）
 """
-            with st.spinner("🎀 Geminiが独自の印と見解を作成中..."):
+            with st.spinner("🎀 Geminiが『格・実績』に基づく独自予想を作成中..."):
                 try:
                     ai_client = genai.Client(api_key=api_key_input)
                     response = ai_client.models.generate_content(
                         model='gemini-2.5-flash',
                         contents=f"対象レース: {race_display_name}\n\n対象馬:\n" + "\n".join(table_summary),
-                        config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.5) 
+                        config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.6) 
                     )
-                    clean_text = re.sub(r'^[#\-\s]+', '', response.text.strip())
-                    st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
+                    resp_text = response.text
+                    
+                    # 🌟 プログラムで印と馬番を自動抽出
+                    new_marks = {}
+                    for line in resp_text.split('\n'):
+                        match = re.search(r'([◎◯▲△☆]).*?\[(\d{1,2})\]', line)
+                        if match:
+                            mark = match.group(1)
+                            horse_num = int(match.group(2))
+                            new_marks[horse_num] = mark
+                            
+                    # セッションに結果を保存
+                    st.session_state['gemini_results'][target_id_str] = {
+                        'marks': new_marks,
+                        'text': resp_text
+                    }
+                    
+                    # DataFrameを更新して表を再描画（リロードなしで表に印がつく！）
+                    for h_num, g_mark in new_marks.items():
+                        scored_df.loc[scored_df['馬番_num'] == h_num, 'gemini_mark'] = g_mark
+                    table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
+                    
                 except Exception as e: st.error(f"エラー: {e}")
+
+        # Geminiの見解テキストが存在する場合は表示する
+        if target_id_str in st.session_state['gemini_results']:
+            clean_text = re.sub(r'^[#\-\s]+', '', st.session_state['gemini_results'][target_id_str]['text'].strip())
+            st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
