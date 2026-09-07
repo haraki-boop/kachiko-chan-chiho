@@ -6,10 +6,9 @@ import re
 import ast
 import unicodedata
 
-print("📊 第3形態・3連系特化AI ガチ検証（回収率・的中内訳表示版）実行中...")
+print("📊 第3形態・3連系特化AI ガチ検証（最新日付自動抽出・自己完結版）実行中...")
 
 MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
-FUTURE_FILE = "future_races_chiho.csv"
 RESULT_FILE = "ml_target_data_chiho.csv"
 
 NAR_PLACES = {
@@ -18,14 +17,14 @@ NAR_PLACES = {
     "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"
 }
 
-if not os.path.exists(MODEL_FILE) or not os.path.exists(FUTURE_FILE) or not os.path.exists(RESULT_FILE):
+if not os.path.exists(MODEL_FILE) or not os.path.exists(RESULT_FILE):
     print("⚠️ 必要なファイルが見つかりません。")
     exit()
 
 def clean_horse_name(name): 
     if pd.isna(name): return ""
     s = unicodedata.normalize('NFKC', str(name))
-    return re.sub(r'[\s・･._ ]+', '', s).strip()
+    return re.sub(r'[\s・･._\u3000\t\r\n]+', '', s).strip()
 
 def parse_rank(x):
     if pd.isna(x): return np.nan
@@ -33,27 +32,33 @@ def parse_rank(x):
     try: return float(s)
     except: return np.nan
 
-# 🌟 レースID整形用の強力な関数を追加
 def clean_race_id(val):
     if pd.isna(val): return ""
-    s = str(val).strip()
-    s = re.sub(r'\.0$', '', s) # float化による.0を削除
-    return s
+    try: return str(int(float(val)))
+    except: return str(val).strip().replace('.0', '')
 
-# 1. 過去データの読み込み & 辞書構築
+# 1. 結果データベースのみを読み込む
 try:
-    df_result = pd.read_csv(RESULT_FILE, low_memory=False, encoding='utf-8')
+    df_all = pd.read_csv(RESULT_FILE, low_memory=False, encoding='utf-8')
 except UnicodeDecodeError:
-    df_result = pd.read_csv(RESULT_FILE, low_memory=False, encoding='cp932')
+    df_all = pd.read_csv(RESULT_FILE, low_memory=False, encoding='cp932')
 
-try:
-    df_future = pd.read_csv(FUTURE_FILE, low_memory=False, encoding='utf-8')
-except UnicodeDecodeError:
-    df_future = pd.read_csv(FUTURE_FILE, low_memory=False, encoding='cp932')
+df_all['race_id_clean'] = df_all['race_id'].apply(clean_race_id)
+df_all['date_dt'] = pd.to_datetime(df_all.get('date'), errors='coerce').fillna(pd.to_datetime('2020-01-01'))
 
-df_result['race_id_clean'] = df_result['race_id'].apply(clean_race_id)
-df_future['race_id_clean'] = df_future['race_id'].apply(clean_race_id)
+# 🌟 データベースの中から「一番最新の日付（昨日）」を自動抽出
+latest_date = df_all['date_dt'].max()
+print(f"📅 評価対象日: {latest_date.strftime('%Y-%m-%d')} のレースを検証します")
 
+# 過去データ（予測の材料）と、評価対象（答え合わせ用）に完全分離
+df_result = df_all[df_all['date_dt'] < latest_date].copy()
+df_future = df_all[df_all['date_dt'] == latest_date].copy()
+
+if df_future.empty:
+    print("⚠️ 評価対象データが存在しません。")
+    exit()
+
+# === df_result（過去）を使って辞書を作る ===
 df_result['馬名_clean'] = df_result['馬名'].astype(str).apply(clean_horse_name)
 df_result['騎手_clean'] = df_result.get('騎手', pd.Series(['']*len(df_result))).astype(str).apply(clean_horse_name)
 trainer_col = df_result.get('調教師', df_result['騎手_clean'])
@@ -64,7 +69,7 @@ rank_col = '着順_num' if '着順_num' in df_result.columns else '着順'
 df_result['target_rank_tmp'] = df_result[rank_col].apply(parse_rank)
 df_result['target_win'] = (df_result['target_rank_tmp'] == 1.0).astype(int)
 
-df_result['first_corner_raw'] = pd.to_numeric(df_result.get('first_corner', df_result.get('1角')), errors='coerce').fillna(8.0)
+df_result['first_corner_raw'] = pd.to_numeric(df_result.get('first_corner', df_result.get('1角')), errors='coerce').fillna(5.0)
 df_result['last_corner_raw'] = pd.to_numeric(df_result.get('last_corner', df_result.get('4角')), errors='coerce').fillna(df_result['first_corner_raw'])
 df_result['is_stalled'] = (df_result['last_corner_raw'] - df_result['first_corner_raw'] >= 3).astype(int)
 
@@ -93,8 +98,6 @@ df_result['waku_num_tmp'] = pd.to_numeric(df_result.get('枠番'), errors='coerc
 df_result['place_waku_combo'] = df_result['place_code_tmp'] + "_" + df_result['waku_num_tmp'].astype(str)
 waku_dict = df_result.groupby('place_waku_combo')['target_win'].mean().to_dict()
 
-df_result['date_dt'] = pd.to_datetime(df_result.get('date'), errors='coerce').fillna(pd.to_datetime('2020-01-01'))
-
 baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
 df_result['baba_code'] = df_result.get('馬場', pd.Series(['良']*len(df_result))).map(baba_map).fillna(1)
 df_result['is_bad_baba'] = (df_result['baba_code'] >= 3).astype(int)
@@ -115,22 +118,26 @@ for h, group in df_result.sort_values('date_dt').groupby('馬名_clean'):
     class_score_avg = r3['class_weighted_score'].mean()
     stall_rate = r5['is_stalled'].mean()
 
-    bad_baba_mean = group[group['is_bad_baba'] == 1]['target_rank_tmp'].tail(3).mean()
-    if pd.isna(bad_baba_mean): bad_baba_mean = r3['target_rank_tmp'].mean()
-
     last_row = group.iloc[-1]
     prev_is_minami = last_row.get('is_minami_kanto', 0)
-    last_date = group['date_dt'].max()
-    days_since = (pd.Timestamp.now() - last_date).days if not pd.isna(last_date) else 14.0
+    last_date_horse = group['date_dt'].max()
+    days_since = (pd.Timestamp.now() - last_date_horse).days if not pd.isna(last_date_horse) else 14.0
     
     horse_dict[h] = {
-        'first_corner': f_c, 'last_corner': l_c, 'corner_diff': f_c - l_c,
-        'last_3f': l_3f, 'time_diff': t_diff, 'days_since_prev': days_since,
-        'horse_career_runs': len(group), 'prev_is_minami': prev_is_minami,
-        'prev_time_index_avg': time_idx_avg, 'prev_start_index_avg': start_idx_avg, 
-        'prev_last3f_index_avg': last3f_idx_avg, 'horse_prize_avg': horse_prize_avg,
-        'prev_class_weighted_score': class_score_avg,
-        'prev_stall_rate': stall_rate
+        'first_corner': f_c if not pd.isna(f_c) else 5.0, 
+        'last_corner': l_c if not pd.isna(l_c) else 5.0, 
+        'corner_diff': (f_c - l_c) if not pd.isna(f_c - l_c) else 0.0,
+        'last_3f': l_3f if not pd.isna(l_3f) else 39.0, 
+        'time_diff': t_diff if not pd.isna(t_diff) else 1.5, 
+        'days_since_prev': days_since,
+        'horse_career_runs': len(group), 
+        'prev_is_minami': prev_is_minami,
+        'prev_time_index_avg': time_idx_avg if not pd.isna(time_idx_avg) else 100.0, 
+        'prev_start_index_avg': start_idx_avg if not pd.isna(start_idx_avg) else 50.0, 
+        'prev_last3f_index_avg': last3f_idx_avg if not pd.isna(last3f_idx_avg) else 50.0, 
+        'horse_prize_avg': horse_prize_avg if not pd.isna(horse_prize_avg) else 0.0,
+        'prev_class_weighted_score': class_score_avg if not pd.isna(class_score_avg) else 0.0,
+        'prev_stall_rate': stall_rate if not pd.isna(stall_rate) else 0.0
     }
 
 # 2. モデルロード
@@ -145,7 +152,7 @@ if not m_lgb and not m_xgb and not m_cat:
     print("⚠️ エラー: Rankingモデルが見つかりません。")
     exit()
 
-# 3. 出馬表（df_future）へ特徴量を正確に結合
+# 3. 評価データ（df_future）へ特徴量を結合
 df_future['馬名_clean'] = df_future['馬名'].astype(str).apply(clean_horse_name)
 df_future['騎手_clean'] = df_future.get('騎手', pd.Series(['']*len(df_future))).astype(str).apply(clean_horse_name)
 trainer_col = df_future.get('調教師', df_future['騎手_clean'])
@@ -174,17 +181,20 @@ else:
 
 df_future['is_large_weight_change'] = (df_future['body_weight_diff'].abs() >= 10.0).astype(int)
 
-df_future['prev_1c'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 8.0))
-df_future['last_corner'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 8.0))
+df_future['prev_1c'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('first_corner', 5.0))
+df_future['last_corner'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_corner', 5.0))
 df_future['corner_diff'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('corner_diff', 0.0))
 df_future['last_3f_avg_rank'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('last_3f', 39.0))
 df_future['avg_time_diff'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('time_diff', 1.5))
-df_future['is_bad_baba'] = 0
+
+df_future['baba_code'] = df_future.get('馬場', pd.Series(['良']*len(df_future))).map(baba_map).fillna(1)
+df_future['is_bad_baba'] = (df_future['baba_code'] >= 3).astype(int)
+
 df_future['horse_career_runs'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('horse_career_runs', 5.0))
 df_future['斤量'] = pd.to_numeric(df_future.get('斤量'), errors='coerce').fillna(54.0)
 df_future['kinryo_weight_ratio'] = df_future['斤量'] / df_future['body_weight'].clip(lower=350.0)
 
-df_future['is_front_runner'] = (df_future['prev_1c'] <= 3.0).astype(int)
+df_future['is_front_runner'] = (df_future['prev_1c'] <= 3.5).astype(int)
 df_future['race_front_runners'] = df_future.groupby('race_id_clean')['is_front_runner'].transform('sum')
 df_future['high_pace_penalty'] = ((df_future['is_front_runner'] == 1) & (df_future['race_front_runners'] >= 3)).astype(int)
 
@@ -224,8 +234,22 @@ else:
     print("⚠️ 予測に失敗しました。")
     exit()
 
-# 5. 買い目生成 & 答え合わせ
-bets_dict = {}
+# 5. 買い目生成 & 答え合わせ（自らのデータ内で結果照合）
+df_future['target_rank'] = df_future[rank_col].apply(parse_rank)
+
+def parse_payout(payout_str):
+    try:
+        payout_list = ast.literal_eval(payout_str) if isinstance(payout_str, str) else payout_str
+        return payout_list
+    except:
+        return []
+
+total_races = 0
+hit_races = 0
+total_investment = 0
+total_return = 0
+hit_details = []
+
 for race_id, group in df_future.groupby('race_id_clean'):
     if len(group) < 5: continue
     
@@ -246,39 +270,15 @@ for race_id, group in df_future.groupby('race_id_clean'):
             tuple(sorted((t1, t3, t4))), tuple(sorted((t1, t3, t5))), tuple(sorted((t1, t4, t5)))
         ]))
         
-    bets_dict[race_id] = {'type': bet_type, 'bets': bets}
-
-df_result['target_rank'] = df_result['target_rank_tmp']
-df_result['馬番_num'] = pd.to_numeric(df_result.get('馬番'), errors='coerce').fillna(0)
-
-def parse_payout(payout_str):
-    try:
-        payout_list = ast.literal_eval(payout_str) if isinstance(payout_str, str) else payout_str
-        return payout_list
-    except:
-        return []
-
-total_races = 0
-hit_races = 0
-total_investment = 0
-total_return = 0
-hit_details = []
-
-for race_id, strat in bets_dict.items():
-    race_res = df_result[df_result['race_id_clean'] == race_id]
-    if race_res.empty: continue
-    
-    actual_1st = race_res[race_res['target_rank'] == 1.0]['馬番_num'].values
-    actual_2nd = race_res[race_res['target_rank'] == 2.0]['馬番_num'].values
-    actual_3rd = race_res[race_res['target_rank'] == 3.0]['馬番_num'].values
+    actual_1st = group[group['target_rank'] == 1.0]['馬番_num'].values
+    actual_2nd = group[group['target_rank'] == 2.0]['馬番_num'].values
+    actual_3rd = group[group['target_rank'] == 3.0]['馬番_num'].values
     
     if len(actual_1st) > 0 and len(actual_2nd) > 0 and len(actual_3rd) > 0:
         total_races += 1
         total_investment += 600
         
         a1, a2, a3 = actual_1st[0], actual_2nd[0], actual_3rd[0]
-        bet_type = strat['type']
-        bets = strat['bets']
         
         is_hit = False
         payout = 0
@@ -292,8 +292,8 @@ for race_id, strat in bets_dict.items():
             hit_races += 1
             payout_col = 'trifecta_payout' if bet_type == "3連単" else 'trio_payout'
             
-            if payout_col in race_res.columns:
-                payout_data = parse_payout(race_res[payout_col].iloc[0])
+            if payout_col in group.columns:
+                payout_data = parse_payout(group[payout_col].iloc[0])
                 if payout_data and len(payout_data) > 0:
                     try: payout = int(str(payout_data[0]).replace(',', ''))
                     except: payout = 1000
