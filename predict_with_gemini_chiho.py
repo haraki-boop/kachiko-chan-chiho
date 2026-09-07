@@ -384,19 +384,15 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ AIモデル（.pkl）から予測値を出力できませんでした。サイドバーの『キャッシュ完全クリア＆リロード』を押してください。")
         st.stop()
 
-    # 🌟 バグ原因の「バイアスの掛け算」を完全廃止（生スコアを破壊しない！）
-    # Gemini用の表示として保持はするが、Pythonスコアには絶対に掛けない
     if bias_dict:
         race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
     else:
         race_df['bias_multiplier'] = 1.0
 
-    # 🌟 相対評価(0-100点)を廃止し、絶対評価である「偏差値(Hensachi)」へ変換
     score_mean = race_df['rank_score_raw'].mean()
     score_std = race_df['rank_score_raw'].std(ddof=0)
     
     if score_std > 1e-6:
-        # Zスコアを求めて偏差値 (50 ± 10) に変換
         race_df['score_disp'] = np.round(((race_df['rank_score_raw'] - score_mean) / score_std) * 10 + 50).astype(int)
     else:
         race_df['score_disp'] = 50
@@ -420,7 +416,6 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    # 🌟 見出しを「AIスコア」から「AI偏差値」に変更
     html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
@@ -571,7 +566,6 @@ if st.session_state['selected_race_id'] and not df_future.empty:
         front_runners_count = int(scored_df.iloc[0]['race_front_runners']) if 'race_front_runners' in scored_df.columns else 0
         pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 3 else 'ペースは落ち着きそうです。前残り注意。'}"
 
-        # 🌟 偏差値ベース（4以上の差があれば統計的に強いと判断）
         if score_diff >= 4:
             rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
             rec_text = f"1位の強さが抜けている（偏差値 {score_diff} 差）ため、迷わず頭固定の3連単で仕留めます。"
