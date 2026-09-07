@@ -59,7 +59,7 @@ if 'selected_race_id' not in st.session_state: st.session_state['selected_race_i
 if 'baba_status' not in st.session_state: st.session_state['baba_status'] = "良"
 if 'bias_multipliers' not in st.session_state: 
     st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0, "差": 1.0, "追": 1.0}
-# 🌟 Geminiの予測結果を保持するセッション状態を追加
+
 if 'gemini_results' not in st.session_state:
     st.session_state['gemini_results'] = {}
 
@@ -384,13 +384,20 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
         st.error("⚠️ AIモデル（.pkl）から予測値を出力できませんでした。サイドバーの『キャッシュ完全クリア＆リロード』を押してください。")
         st.stop()
 
+    # 🌟 バグ原因の「バイアスの掛け算」を完全廃止（生スコアを破壊しない！）
+    # Gemini用の表示として保持はするが、Pythonスコアには絶対に掛けない
     if bias_dict:
         race_df['bias_multiplier'] = race_df['脚質'].map(bias_dict).fillna(1.0)
-        race_df['rank_score_raw'] = race_df['rank_score_raw'] * race_df['bias_multiplier']
+    else:
+        race_df['bias_multiplier'] = 1.0
 
-    r_max, r_min = race_df['rank_score_raw'].max(), race_df['rank_score_raw'].min()
-    if (r_max - r_min) > 1e-4:
-        race_df['score_disp'] = (((race_df['rank_score_raw'] - r_min) / (r_max - r_min)) * 100).astype(int)
+    # 🌟 相対評価(0-100点)を廃止し、絶対評価である「偏差値(Hensachi)」へ変換
+    score_mean = race_df['rank_score_raw'].mean()
+    score_std = race_df['rank_score_raw'].std(ddof=0)
+    
+    if score_std > 1e-6:
+        # Zスコアを求めて偏差値 (50 ± 10) に変換
+        race_df['score_disp'] = np.round(((race_df['rank_score_raw'] - score_mean) / score_std) * 10 + 50).astype(int)
     else:
         race_df['score_disp'] = 50
 
@@ -411,17 +418,15 @@ def get_mark(idx):
     elif idx == 4: return "☆ 穴馬"
     else: return "消"
 
-# 🌟 表の生成関数をアップデート（AI印とGemini印の2列に拡張）
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AIスコア</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
+    # 🌟 見出しを「AIスコア」から「AI偏差値」に変更
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
-        # AIの印
         ai_mark = get_mark(i)
         b_cls_ai = "badge-honmei" if "◎" in ai_mark else "badge-taikou" if "◯" in ai_mark else "badge-tana" if "▲" in ai_mark else "badge-renka" if "△" in ai_mark else "badge-tana" if "☆" in ai_mark else "badge-keshi"
         
-        # Geminiの印（新規追加）
         gem_mark = r.get('gemini_mark', '-')
         if gem_mark == "-":
             gem_str = "<span style='color:#ccc; font-weight:bold;'>-</span>"
@@ -453,7 +458,7 @@ def generate_beautiful_table(disp_df):
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='color:#5a3d46 !important;'><b>{r.get('horse_rentai_display', 0.0)}%</b></td>
 <td>{idx_str}</td>
-<td style='color:#5a3d46 !important;'><b>{int(r['score_disp'])}点</b></td>
+<td style='color:#5a3d46 !important; font-size:1.1em;'><b>{int(r['score_disp'])}</b></td>
 <td><span class='badge-mark {b_cls_ai}'>{ai_mark}</span></td>
 <td>{gem_str}</td>
 </tr>"""
@@ -517,7 +522,7 @@ if st.session_state['selected_race_id'] and not df_future.empty:
                             st.session_state['bias_multipliers'] = {
                                 k: float(v) for k, v in parsed_dict.items() if k in ["逃", "先", "差", "追"]
                             }
-                            st.success("✅ 馬場バイアスをAIスコアに反映しました！")
+                            st.success("✅ 馬場バイアスを認識しました！（※Python絶対評価は歪めず、Geminiの独立予想にのみ活用します）")
                         else:
                             st.error("JSONデータのパースに失敗しました。")
                     except Exception as e:
@@ -531,7 +536,7 @@ if st.session_state['selected_race_id'] and not df_future.empty:
         <span>🏇 先行: <b>{bm.get('先', 1.0):.1f}倍</b></span> | 
         <span>🐎 差し: <b>{bm.get('差', 1.0):.1f}倍</b></span> | 
         <span>🌪️ 追込: <b>{bm.get('追', 1.0):.1f}倍</b></span>
-        <br><span style='font-size:0.85em; color:#666;'>※入力内容に基づき、AIの生スコアに上記の倍率が掛け合わされています。</span>
+        <br><span style='font-size:0.85em; color:#666;'>※この倍率はGeminiの展開読みにのみ使用され、AIの純粋な能力値(偏差値)は歪めません。</span>
     </div>
     """, unsafe_allow_html=True)
     if st.button("🔄 バイアスをリセット (1.0倍に戻す)"):
@@ -561,19 +566,20 @@ if st.session_state['selected_race_id'] and not df_future.empty:
         u_4 = safe_idx(scored_df, 3)
         u_5 = safe_idx(scored_df, 4)
 
-        score_diff = scored_df.iloc[0]['score_disp'] - scored_df.iloc[1]['score_disp'] if len(scored_df) > 1 else 10
+        score_diff = scored_df.iloc[0]['score_disp'] - scored_df.iloc[1]['score_disp'] if len(scored_df) > 1 else 0
         
         front_runners_count = int(scored_df.iloc[0]['race_front_runners']) if 'race_front_runners' in scored_df.columns else 0
         pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 3 else 'ペースは落ち着きそうです。前残り注意。'}"
 
-        if score_diff >= 5:
-            rec_pattern_name = "🎯 【3連単・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
-            rec_text = f"1位のスコアが抜けている（{score_diff}点差）ため、頭固定の3連単で高配当を狙い撃ちします。"
+        # 🌟 偏差値ベース（4以上の差があれば統計的に強いと判断）
+        if score_diff >= 4:
+            rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
+            rec_text = f"1位の強さが抜けている（偏差値 {score_diff} 差）ため、迷わず頭固定の3連単で仕留めます。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}"
         else:
-            rec_pattern_name = "🛡️ 【3連複・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
-            rec_text = f"上位陣が混戦（{score_diff}点差）なため、1位を軸にしつつ相手を5位まで広げた3連複で高配当を狙います。"
+            rec_pattern_name = "🛡️ 【能力混戦・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
+            rec_text = f"上位陣が能力拮抗（偏差値 {score_diff} 差）しているため、1位を軸にしつつ相手を広く構えた3連複で狙います。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}"
 
@@ -583,14 +589,13 @@ if st.session_state['selected_race_id'] and not df_future.empty:
             <span style='font-size:0.85em; font-weight:normal;'>
             * <b>軸馬(1頭):</b> <b>{axis_horse}</b><br>
             * <b>相手(ヒモ):</b> {target_horses}<br>
-            * <b>理由:</b> 🤖 <b>LambdaMART(ランク学習) × 展開ペナルティ相関</b>に基づく上位選定ロジックです。{rec_text}{pace_text}
+            * <b>理由:</b> 🤖 <b>LambdaMARTが算出した純粋な絶対強さ(偏差値)</b>に基づく選定です。{rec_text}{pace_text}
             </span>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAIスコア (📍 LambdaMART 順位学習版)</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAI評価 (📍 絶対能力・偏差値版)</div>", unsafe_allow_html=True)
 
-        # 🌟 Geminiの印情報をDataFrameに適用
         scored_df['gemini_mark'] = "-"
         target_id_str = str(target_id)
         if target_id_str in st.session_state['gemini_results']:
@@ -598,7 +603,6 @@ if st.session_state['selected_race_id'] and not df_future.empty:
             for h_num, g_mark in saved_marks.items():
                 scored_df.loc[scored_df['馬番_num'] == h_num, 'gemini_mark'] = g_mark
 
-        # 🌟 表をプレースホルダーに描画（後でリアルタイム更新するため）
         table_placeholder = st.empty()
         table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
@@ -610,18 +614,18 @@ if st.session_state['selected_race_id'] and not df_future.empty:
             table_summary = []
             for idx, row in scored_df.head(9).iterrows():
                 table_summary.append(
-                    f"【Python指数 {idx+1}位】 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | 獲得賞金偏差(格):{row['race_prize_relative']:.2f} | キャリア(実績):{int(row['horse_career_runs'])}戦 | Pythonスコア:{row['score_disp']}点"
+                    f"【Python評価 {idx+1}位】 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | 獲得賞金偏差(格):{row['race_prize_relative']:.2f} | キャリア(実績):{int(row['horse_career_runs'])}戦 | Python偏差値:{row['score_disp']}"
                 )
 
             sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
-Python（機械学習AI）が「過去指数・近走成績」をベースに弾き出したスコア上位9頭のデータをお渡しします。
+Python（機械学習AI）がオッズを見ずに「過去の絶対能力（偏差値）」だけで弾き出した上位9頭のデータをお渡しします。
 
 【🚨あなたの役割と絶対厳守のルール🚨】
 あなたの役割は、Pythonと同じ視点で予想することではありません。
 Pythonのスコアを参考にしつつも、あなたは【＋αの要素（調教の気配、クラスの格、過去の実績、本日の馬場バイアス）】を最優先して、全く別の角度から独自の印（◎, ◯, ▲, △, ☆）を打ってください。
 
-1. Pythonのスコア順（1位〜5位）と全く同じ順序で印を打つことは禁止します。別視点の予想家として独立した評価を下してください。
-2. データ内の「獲得賞金偏差(格)」が高い馬は、近走不振（Pythonスコアが低め）でも「地力・実績上位」として高く評価してください。
+1. Pythonの評価順（1位〜5位）と全く同じ順序で印を打つことは禁止します。別視点の予想家として独立した評価を下してください。
+2. データ内の「獲得賞金偏差(格)」が高い馬は、近走不振でも「地力・実績上位」として高く評価してください。
 3. 同型ペナルティや失速率、現在の馬場バイアスを加味し、展開が向く伏兵（☆穴馬）を必ず1頭見つけ出してください。
 
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
@@ -649,7 +653,6 @@ Pythonのスコアを参考にしつつも、あなたは【＋αの要素（調
                     )
                     resp_text = response.text
                     
-                    # 🌟 プログラムで印と馬番を自動抽出
                     new_marks = {}
                     for line in resp_text.split('\n'):
                         match = re.search(r'([◎◯▲△☆]).*?\[(\d{1,2})\]', line)
@@ -658,20 +661,17 @@ Pythonのスコアを参考にしつつも、あなたは【＋αの要素（調
                             horse_num = int(match.group(2))
                             new_marks[horse_num] = mark
                             
-                    # セッションに結果を保存
                     st.session_state['gemini_results'][target_id_str] = {
                         'marks': new_marks,
                         'text': resp_text
                     }
                     
-                    # DataFrameを更新して表を再描画（リロードなしで表に印がつく！）
                     for h_num, g_mark in new_marks.items():
                         scored_df.loc[scored_df['馬番_num'] == h_num, 'gemini_mark'] = g_mark
                     table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
                     
                 except Exception as e: st.error(f"エラー: {e}")
 
-        # Geminiの見解テキストが存在する場合は表示する
         if target_id_str in st.session_state['gemini_results']:
             clean_text = re.sub(r'^[#\-\s]+', '', st.session_state['gemini_results'][target_id_str]['text'].strip())
             st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
