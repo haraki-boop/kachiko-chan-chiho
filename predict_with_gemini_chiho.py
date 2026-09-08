@@ -48,6 +48,7 @@ st.markdown("""
     .badge-renka  { background: linear-gradient(135deg, #ffa502, #eccc68); color: #222 !important; }
     .badge-keshi  { background: #e0e0e0; color: #666666 !important; }
     .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
+    .note-icon { font-size: 1.1em; margin-right: 3px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -68,7 +69,8 @@ def reset_bias(): st.session_state['bias_multipliers'] = {"逃": 1.0, "先": 1.0
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 FUTURE_CSV, ML_TARGET_CSV = "future_races_chiho.csv", "ml_target_data_chiho.csv"
-MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
+
+MODEL_FILES = ["keiba_ai_model.pkl", "keiba_ai_model_nar_ensemble.pkl"]
 
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
@@ -81,8 +83,9 @@ FEATURES = [
     '斤量', 'body_weight', 'kinryo_weight_ratio', 'distance_num',
     'race_front_runners', 'waku_win_rate',
     'prev_time_index_avg', 'prev_start_index_avg', 'prev_last3f_index_avg', 'dist_change_num',
-    'prev_class_weighted_score',
-    'prev_stall_rate', 'high_pace_penalty' 
+    'prev_class_weighted_score', 'prev_stall_rate', 'high_pace_penalty',
+    'jockey_upgrade_diff', 'hidden_strong_flag', 'bad_baba_win_rate', 'is_class_drop',
+    'prev_race_member_strength', 'track_dist_ema_index', 'max_last3f_ratio'
 ]
 
 def clean_horse_name(name_val): 
@@ -114,20 +117,25 @@ def load_csv_safe(path):
 
 @st.cache_resource
 def load_model(): 
-    if not os.path.exists(MODEL_FILE): 
-        st.error(f"⚠️ 致命的エラー: モデルファイル '{MODEL_FILE}' が見つかりません。")
+    target_file = None
+    for f in MODEL_FILES:
+        if os.path.exists(f):
+            target_file = f
+            break
+    if not target_file:
+        st.error(f"⚠️ 致命的エラー: モデルファイルが見つかりません。")
         return None
     try: 
-        return joblib.load(MODEL_FILE)
+        return joblib.load(target_file)
     except Exception as e: 
-        st.error(f"⚠️ 致命的エラー: モデルの読み込みに失敗しました。\n詳細: {e}")
+        st.error(f"⚠️ 致命的エラー: モデル '{target_file}' の読み込みに失敗しました。\n詳細: {e}")
         return None
 
 df_past = load_csv_safe(ML_TARGET_CSV)
 df_future = load_csv_safe(FUTURE_CSV)
 
 if df_past.empty:
-    st.error("⚠️ 過去データ (ml_target_data_chiho.csv) の読み込みに失敗しました。AIが馬の能力を判定できません。")
+    st.error("⚠️ 過去データ (ml_target_data_chiho.csv) の読み込みに失敗しました。")
 
 if not df_future.empty and 'race_id' in df_future.columns:
     df_future['place_code'] = df_future['race_id'].astype(str).str[4:6]
@@ -156,14 +164,15 @@ def build_past_dicts(df_p):
         df_p['target_win'] = (df_p['target_rank_tmp'] == 1.0).astype(int)
         df_p['target_rentai'] = (df_p['target_rank_tmp'] <= 2.0).astype(int)
 
+        if 'last_3f' not in df_p.columns:
+            df_p['last_3f'] = pd.to_numeric(df_p.get('上り'), errors='coerce').fillna(39.0)
+        df_p['last_3f_rank'] = df_p.groupby('race_id')['last_3f'].rank(method='min', na_option='bottom')
+
         df_p['first_corner_raw'] = pd.to_numeric(df_p.get('first_corner', df_p.get('1角')), errors='coerce').fillna(5.0)
         df_p['last_corner_raw'] = pd.to_numeric(df_p.get('last_corner', df_p.get('4角')), errors='coerce').fillna(df_p['first_corner_raw'])
-        
         df_p['is_stalled'] = (df_p['last_corner_raw'] - df_p['first_corner_raw'] >= 3).astype(int)
 
-        df_p['last_3f'] = pd.to_numeric(df_p.get('last_3f', df_p.get('上り')), errors='coerce').fillna(39.0)
         df_p['time_diff'] = pd.to_numeric(df_p.get('time_diff', df_p.get('着差')), errors='coerce').fillna(1.5)
-        
         df_p['custom_time_index'] = pd.to_numeric(df_p.get('custom_time_index'), errors='coerce')
         df_p['custom_start_index'] = pd.to_numeric(df_p.get('custom_start_index'), errors='coerce')
         df_p['custom_last3f_index'] = pd.to_numeric(df_p.get('custom_last3f_index'), errors='coerce')
@@ -191,43 +200,71 @@ def build_past_dicts(df_p):
         baba_map = {'良': 1, '稍': 2, '稍重': 2, '重': 3, '不': 4, '不良': 4}
         df_p['baba_code'] = df_p.get('馬場', pd.Series(['良']*len(df_p))).map(baba_map).fillna(1)
         df_p['is_bad_baba'] = (df_p['baba_code'] >= 3).astype(int)
-        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400)
+        df_p['distance_num'] = pd.to_numeric(df_p.get('distance'), errors='coerce').fillna(1400).astype(int)
         
         MINAMI_KANTO_CODES = ['42', '43', '44', '45']
         df_p['is_minami_kanto'] = df_p['place_code_tmp'].isin(MINAMI_KANTO_CODES).astype(int)
-
         df_p['date_dt'] = pd.to_datetime(df_p.get('date'), errors='coerce').fillna(pd.to_datetime('2020-01-01'))
 
+        # 🌟 修正1: next_rank（前走相手強度）計算前に時系列ソートを実行
+        df_p = df_p.sort_values(['馬名_clean', 'date_dt']).reset_index(drop=True)
+        df_p['next_rank'] = df_p.groupby('馬名_clean')['target_rank_tmp'].shift(-1)
+        top3_next = df_p[df_p['target_rank_tmp'] <= 3.0].groupby('race_id')['next_rank'].mean().rename('race_next_level')
+        df_p = df_p.merge(top3_next, on='race_id', how='left')
+        df_p['race_next_level'] = df_p['race_next_level'].fillna(5.0)
+
         sorted_p = df_p.sort_values('date_dt')
+
+        def calc_ema(series, span):
+            s = series.dropna()
+            if s.empty: return np.nan
+            return s.ewm(span=span, min_periods=1).mean().iloc[-1]
+
         for h, group in sorted_p.groupby('馬名_clean'):
             r3 = group.tail(3)
             r5 = group.tail(5)
-            f_c = r3['first_corner_raw'].mean()
-            l_c = r3['last_corner_raw'].mean()
-            l_3f = r3['last_3f'].mean()
-            t_diff = r3['time_diff'].mean()
             
-            time_idx_avg = r3['custom_time_index'].dropna().mean()
-            if pd.isna(time_idx_avg): time_idx_avg = 100.0
+            f_c = calc_ema(r3['first_corner_raw'], 3)
+            l_c = calc_ema(r3['last_corner_raw'], 3)
+            l_3f = calc_ema(r3['last_3f'], 3)
+            t_diff = calc_ema(r3['time_diff'], 3)
             
-            start_idx_avg = r3['custom_start_index'].dropna().mean()
-            if pd.isna(start_idx_avg): start_idx_avg = 50.0
-            
-            last3f_idx_avg = r3['custom_last3f_index'].dropna().mean()
-            if pd.isna(last3f_idx_avg): last3f_idx_avg = 50.0
+            time_idx_avg = calc_ema(r3['custom_time_index'], 3)
+            start_idx_avg = calc_ema(r3['custom_start_index'], 3)
+            last3f_idx_avg = calc_ema(r3['custom_last3f_index'], 3)
 
-            class_score_avg = r3['class_weighted_score'].mean()
-            stall_rate = r5['is_stalled'].mean()
+            class_score_avg = calc_ema(r3['class_weighted_score'], 3)
+            stall_rate = calc_ema(r5['is_stalled'], 5)
             
-            rentai_rate = group['target_rentai'].mean()
-            horse_prize_avg = r5['prize_num_log'].mean()
+            rentai_rate = calc_ema(r5['target_rentai'], 5)
+            horse_prize_avg = calc_ema(r5['prize_num_log'], 5)
             
             last_row = group.iloc[-1]
             prev_is_minami = last_row.get('is_minami_kanto', 0)
             
             last_date = group['date_dt'].max()
             days_since = (pd.Timestamp.now() - last_date).days if not pd.isna(last_date) else 14.0
-            
+
+            prev_jockey = last_row.get('騎手_clean', '')
+            prev_jockey_win = jockey_dict.get(prev_jockey, 0.05)
+
+            prev_rank = last_row.get('target_rank_tmp', 5.0)
+            prev_l3f_rank = last_row.get('last_3f_rank', 5.0)
+            hidden_strong = 1 if (prev_rank >= 4.0 and prev_l3f_rank <= 2.0) else 0
+
+            bad_baba_runs = group[group['is_bad_baba'] == 1]
+            bad_baba_rentai = calc_ema(bad_baba_runs['target_rentai'], 3) if len(bad_baba_runs) > 0 else rentai_rate
+            if pd.isna(bad_baba_rentai): bad_baba_rentai = rentai_rate
+
+            prev_prize_log = last_row.get('prize_num_log', 0.0)
+            prev_member_strength = last_row.get('race_next_level', 5.0)
+            min_l3f = r3['last_3f'].min()
+
+            # 🌟 修正2: 距離の型を整数文字列に統一してフォーマットずれを防止
+            track_dist_dict = {}
+            for combo, combo_grp in group.groupby(group['place_code_tmp'] + "_" + group['distance_num'].astype(int).astype(str)):
+                track_dist_dict[combo] = calc_ema(combo_grp['custom_time_index'], 3)
+
             horse_dict[h] = {
                 'first_corner': f_c if not pd.isna(f_c) else 5.0, 
                 'last_corner': l_c if not pd.isna(l_c) else 5.0, 
@@ -239,11 +276,18 @@ def build_past_dicts(df_p):
                 'days_since_prev': days_since,
                 'horse_career_runs': len(group),
                 'prev_is_minami': prev_is_minami,
-                'prev_time_index_avg': time_idx_avg,
-                'prev_start_index_avg': start_idx_avg,
-                'prev_last3f_index_avg': last3f_idx_avg,
+                'prev_time_index_avg': time_idx_avg if not pd.isna(time_idx_avg) else 100.0,
+                'prev_start_index_avg': start_idx_avg if not pd.isna(start_idx_avg) else 50.0,
+                'prev_last3f_index_avg': last3f_idx_avg if not pd.isna(last3f_idx_avg) else 50.0,
                 'prev_class_weighted_score': class_score_avg if not pd.isna(class_score_avg) else 0.0,
-                'prev_stall_rate': stall_rate if not pd.isna(stall_rate) else 0.0
+                'prev_stall_rate': stall_rate if not pd.isna(stall_rate) else 0.0,
+                'prev_jockey_win': prev_jockey_win,
+                'hidden_strong': hidden_strong,
+                'bad_baba_rentai': bad_baba_rentai,
+                'prev_prize_log': prev_prize_log,
+                'prev_race_member_strength': prev_member_strength if not pd.isna(prev_member_strength) else 5.0,
+                'min_l3f': min_l3f if not pd.isna(min_l3f) else 39.0,
+                'track_dist_dict': track_dist_dict
             }
     return jockey_dict, horse_dict, waku_dict, trainer_dict, combo_dict
 
@@ -363,7 +407,60 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     race_df['jockey_win_display'] = (race_df['jockey_win_rate'] * 100).round(1)
     race_df['horse_rentai_display'] = (race_df['horse_rentai_rate'] * 100).round(1)
 
-    X_input = race_df[FEATURES].fillna(0.0).astype(float)
+    safe_assign('prev_jockey_win', 'prev_jockey_win', 0.05)
+    race_df['jockey_upgrade_diff'] = race_df['jockey_win_rate'] - race_df['prev_jockey_win']
+    safe_assign('hidden_strong_flag', 'hidden_strong', 0)
+    safe_assign('bad_baba_win_rate', 'bad_baba_rentai', 0.0)
+    safe_assign('prev_prize_log', 'prev_prize_log', 0.0)
+    race_df['is_class_drop'] = (race_df['prev_prize_log'] - race_mean_prize >= 0.4).astype(int)
+    
+    safe_assign('prev_race_member_strength', 'prev_race_member_strength', 5.0)
+
+    # 🌟 修正2: 距離キーを int 経由の文字列にして合致させる
+    def get_track_dist_ema(row):
+        h_info = horse_dict.get(row['馬名_clean'], {})
+        t_dict = h_info.get('track_dist_dict', {})
+        combo_key = f"{row['place_code_str']}_{int(row['distance_num'])}"
+        val = t_dict.get(combo_key, np.nan)
+        return val if pd.notna(val) else h_info.get('prev_time_index_avg', 100.0)
+
+    race_df['track_dist_ema_index'] = race_df.apply(get_track_dist_ema, axis=1)
+
+    safe_assign('min_l3f', 'min_l3f', 39.0)
+    race_min_l3f = np.clip(race_df['min_l3f'].min(), 30.0, 45.0)
+    race_df['max_last3f_ratio'] = race_df['min_l3f'] / race_min_l3f
+
+    # 🌟 修正3: 新旧パラメータ名・特徴量名の完全自動エイリアス同期（0.0埋め防止）
+    alias_map = {
+        'kinryo_num': '斤量',
+        'interval_days': 'days_since_prev',
+        'horse_runs': 'horse_career_runs',
+        'start_idx_avg': 'prev_start_index_avg',
+        'time_idx_avg': 'prev_time_index_avg',
+        'last3f_idx_avg': 'prev_last3f_index_avg',
+        'stall_rate': 'prev_stall_rate',
+        'class_score_avg': 'prev_class_weighted_score',
+        'same_dist_avg_rank': 'avg_time_diff',
+        'same_place_avg_rank': 'avg_time_diff'
+    }
+    for k_src, k_tgt in alias_map.items():
+        if k_src not in race_df.columns and k_tgt in race_df.columns:
+            race_df[k_src] = race_df[k_tgt]
+        elif k_tgt not in race_df.columns and k_src in race_df.columns:
+            race_df[k_tgt] = race_df[k_src]
+
+    def safe_predict(model, df):
+        if hasattr(model, 'feature_name_'):  
+            cols = model.feature_name_
+        elif hasattr(model, 'feature_names_in_'): 
+            cols = model.feature_names_in_
+        elif isinstance(model_data, dict) and 'features' in model_data:
+            cols = model_data['features']
+        else:
+            cols = FEATURES
+        for c in cols:
+            if c not in df.columns: df[c] = 0.0
+        return model.predict(df[cols].astype(float))
 
     if not model_data or not isinstance(model_data, dict):
         st.error("⚠️ エラー: AIモデルファイルが正常にロードされていません。")
@@ -374,14 +471,14 @@ def calculate_race_scores(race_id_target, target_df, baba_status="良", bias_dic
     m_cat = model_data.get('model_rank_cat') or model_data.get('model_place_cat') or model_data.get('model_win_cat')
 
     preds = []
-    if m_lgb and hasattr(m_lgb, 'predict'): preds.append(m_lgb.predict(X_input))
-    if m_xgb and hasattr(m_xgb, 'predict'): preds.append(m_xgb.predict(X_input))
-    if m_cat and hasattr(m_cat, 'predict'): preds.append(m_cat.predict(X_input))
+    if m_lgb and hasattr(m_lgb, 'predict'): preds.append(safe_predict(m_lgb, race_df))
+    if m_xgb and hasattr(m_xgb, 'predict'): preds.append(safe_predict(m_xgb, race_df))
+    if m_cat and hasattr(m_cat, 'predict'): preds.append(safe_predict(m_cat, race_df))
 
     if preds:
         race_df['rank_score_raw'] = np.mean(preds, axis=0)
     else:
-        st.error("⚠️ AIモデル（.pkl）から予測値を出力できませんでした。サイドバーの『キャッシュ完全クリア＆リロード』を押してください。")
+        st.error("⚠️ AIモデル（.pkl）から予測値を出力できませんでした。")
         st.stop()
 
     if bias_dict:
@@ -416,7 +513,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬体重</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注</th><th>騎手(勝率)</th><th>脚質</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         ai_mark = get_mark(i)
@@ -432,23 +529,23 @@ def generate_beautiful_table(disp_df):
         kyaku = r.get('脚質', '-')
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
-        actual_w = str(r.get('馬体重', '-')).strip()
-        if actual_w in ["", "-", "nan", "NaN", "None"]:
-            body_w = int(r.get('body_weight', 470))
-            weight_str = f"<span style='color:#aaa; font-size:0.9em;'>{body_w}<br>(前走)</span>"
-        else:
-            weight_str = f"<b>{format_weight_display(actual_w)}</b>"
-        
         jockey_str = f"{r.get('騎手', '-')}<br><span style='font-size:0.8em; color:#666;'>({r.get('jockey_win_display', 0.0)}%)</span>"
         
         t_idx = int(r.get('prev_time_index_avg', 100))
         s_idx = int(r.get('prev_start_index_avg', 50))
         idx_str = f"<span style='font-size:0.85em;'><b>{t_idx}</b> / <span style='color:#e67e22;'><b>{s_idx}</b></span></span>"
 
+        notes = []
+        if r.get('hidden_strong_flag', 0) == 1: notes.append("<span class='note-icon'>🔥</span>隠れ実力")
+        if r.get('is_class_drop', 0) == 1: notes.append("<span class='note-icon'>💰</span>降級戦")
+        if r.get('jockey_upgrade_diff', 0.0) >= 0.08: notes.append("<span class='note-icon'>🚀</span>勝負気配(鞍上)")
+        if r.get('track_dist_ema_index', 100.0) >= 105.0: notes.append("<span class='note-icon'>⚡</span>コース巧者")
+        note_str = "<br>".join(notes) if notes else "<span style='color:#ccc;'>-</span>"
+
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{int(r['馬番_num']):02d}</td>
 <td style='text-align:left; font-weight:800; color:#5a3d46 !important;'>{r.get('馬名', '-')}</td>
-<td>{weight_str}</td>
+<td style='font-size:0.85em; font-weight:bold; color:#e67e22;'>{note_str}</td>
 <td style='color:#666666 !important;'>{jockey_str}</td>
 <td><span style='{k_style} color:#fff !important; padding:3px 8px; border-radius:6px; font-size:0.85em; font-weight:bold;'>{kyaku}</span></td>
 <td style='color:#5a3d46 !important;'><b>{r.get('horse_rentai_display', 0.0)}%</b></td>
@@ -608,7 +705,7 @@ if st.session_state['selected_race_id'] and not df_future.empty:
             table_summary = []
             for idx, row in scored_df.head(9).iterrows():
                 table_summary.append(
-                    f"【Python評価 {idx+1}位】 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 連対率:{row['horse_rentai_display']}% | 同型ペナルティ:{row['high_pace_penalty']} | 失速率:{row['prev_stall_rate']:.2f} | 獲得賞金偏差(格):{row['race_prize_relative']:.2f} | キャリア(実績):{int(row['horse_career_runs'])}戦 | Python偏差値:{row['score_disp']}"
+                    f"【Python評価 {idx+1}位】 馬番:{int(row['馬番_num']):02d} | 馬名:{row['馬名']} | 脚質:{row['脚質']} | 騎手:{row['騎手']} | 鞍上強化スコア:{row.get('jockey_upgrade_diff', 0.0):.2f} | 隠れ実力馬フラグ:{int(row.get('hidden_strong_flag', 0))} | 降級フラグ:{int(row.get('is_class_drop', 0))} | 前走相手強度:{row.get('prev_race_member_strength', 5.0):.1f}着 | コース別指数:{row.get('track_dist_ema_index', 100.0):.1f} | Python偏差値:{row['score_disp']}"
                 )
 
             sys_inst = f"""あなたは地方競馬の熟練予想AI「勝ち子ちゃん（Gemini）」です。
@@ -616,28 +713,28 @@ Python（機械学習AI）がオッズを見ずに「過去の絶対能力（偏
 
 【🚨あなたの役割と絶対厳守のルール🚨】
 あなたの役割は、Pythonと同じ視点で予想することではありません。
-Pythonのスコアを参考にしつつも、あなたは【＋αの要素（調教の気配、クラスの格、過去の実績、本日の馬場バイアス）】を最優先して、全く別の角度から独自の印（◎, ◯, ▲, △, ☆）を打ってください。
+Pythonのスコアを参考にしつつも、あなたは【＋αの激アツ要素（前走相手強度、コース別指数、鞍上強化、降級、馬場バイアス）】を最優先して、全く別の角度から独自の印（◎, ◯, ▲, △, ☆）を打ってください。
 
 1. Pythonの評価順（1位〜5位）と全く同じ順序で印を打つことは禁止します。別視点の予想家として独立した評価を下してください。
-2. データ内の「獲得賞金偏差(格)」が高い馬は、近走不振でも「地力・実績上位」として高く評価してください。
-3. 同型ペナルティや失速率、現在の馬場バイアスを加味し、展開が向く伏兵（☆穴馬）を必ず1頭見つけ出してください。
+2. データ内の「前走相手強度（数値が小さいほどハイレベル戦）」「コース別指数（105以上で爆発）」「降級フラグ(1)」を持つ馬は、地力上位として高く評価してください。
+3. 今の馬場バイアスを加味し、展開が向く実力馬・伏兵（☆）を1頭見つけ出してください。
 
 競馬場: {info['place_name']} / 馬場: {st.session_state['baba_status']}
 適用中のバイアス: 逃げ {bm.get('逃')}倍, 先行 {bm.get('先')}倍, 差し {bm.get('差')}倍, 追込 {bm.get('追')}倍
 
 【回答の構成】
-🌸 Geminiの独自見解（格・実績・展開フォーカス）
-（Pythonの数値だけでは測れない「格」や「展開の利」から、どうレースを読むかを簡潔に）
+🌸 Geminiの独自見解（特注サイン・展開フォーカス）
+（Pythonの数値だけでは測れない「前走レベル」や「コース適性」から、どうレースを読むかを簡潔に）
 
 🎯 Gemini独自の印と解説
 ※【重要】システムが馬番を自動抽出するため、必ず以下のフォーマット通りに記述してください。馬番は必ず半角数字にし、[ ]で囲んでください。
-◎ [馬番] 馬名 （調教・格・実績・展開から最も狙える理由）
+◎ [馬番] 馬名 （地力・前走レベル・コース適性・展開から最も狙える理由）
 ◯ [馬番] 馬名 （理由）
 ▲ [馬番] 馬名 （理由）
 △ [馬番] 馬名 （理由）
-☆ [馬番] 馬名 （Python評価は低めだが、実績や展開で一発ある理由）
+☆ [馬番] 馬名 （Python評価は低めだが、コース適性や前走レベルで一発ある理由）
 """
-            with st.spinner("🎀 Geminiが『格・実績』に基づく独自予想を作成中..."):
+            with st.spinner("🎀 Geminiが『前走レベル・コース適性』に基づく独自予想を作成中..."):
                 try:
                     ai_client = genai.Client(api_key=api_key_input)
                     response = ai_client.models.generate_content(
