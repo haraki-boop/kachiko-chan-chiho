@@ -25,13 +25,14 @@ def get_race_bbs(race_id):
         comments = []
         for item in soup.find_all(["div", "p", "span"], class_=re.compile(r'Comment_Text|Bbs_Text|txt|comment', re.I)):
             c = clean_text(item.text)
-            if c and len(c) >= 5 and "※" not in c:
+            # 💡 ゴミテキスト（コメントを投稿する、※など）をここで最初から除外します
+            if c and len(c) >= 5 and "※" not in c and "コメントを投稿" not in c:
                 comments.append(c)
             if len(comments) >= 3:
                 break
         
         if not comments:
-            return "特に目立った話題なし"
+            return "特になし"
         
         return " / ".join(comments)
     except Exception:
@@ -98,17 +99,15 @@ def get_today_chiho_races():
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
                     
-                    # 💡 【修正ポイント】ご提示いただいた画像の通り、列の場所（class）を正しく指定！
+                    # 💡 【修正ポイント】class="Popular..." から正しくオッズと人気を取得
                     odds = "15.0"
                     pop = "99"
                     
-                    # class名に "Popular" が含まれる <td> をすべて取得
                     pop_tds = row.find_all("td", class_=re.compile(r'Popular', re.I))
                     if len(pop_tds) >= 2:
-                        odds = clean_text(pop_tds[0].text)  # 1つ目がオッズ（Popular_Txt R）
-                        pop = clean_text(pop_tds[1].text)   # 2つ目が人気（Popular_Txt C）
+                        odds = clean_text(pop_tds[0].text)  # 1つ目がオッズ
+                        pop = clean_text(pop_tds[1].text)   # 2つ目が人気
                     elif len(cols) >= 9:
-                        # 念のための予備ルート（列番号から直接取得）
                         odds = clean_text(cols[7].text)
                         pop = clean_text(cols[8].text)
 
@@ -134,4 +133,4 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（オッズ・世論コメント追加版）")
+        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（オッズ・世論コメント対応版）")
