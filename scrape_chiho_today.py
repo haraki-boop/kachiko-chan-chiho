@@ -16,9 +16,31 @@ def clean_text(text):
     if not text: return ""
     return re.sub(r'[\s\u3000]+', '', str(text)).strip()
 
+# 💡 新機能：レース掲示板から最新の世論（コメント）を拾ってくる関数
+def get_race_bbs(race_id):
+    url = f"https://nar.netkeiba.com/race/bbs.html?race_id={race_id}"
+    try:
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        soup = BeautifulSoup(res.content, 'html.parser')
+        
+        comments = []
+        # 掲示板のテキストが入っていそうなクラスを幅広く狙い撃ち
+        for item in soup.find_all(["div", "p", "span"], class_=re.compile(r'Comment_Text|Bbs_Text|txt|comment', re.I)):
+            c = clean_text(item.text)
+            if c and len(c) >= 5 and "※" not in c: # 5文字以上で、システムの注意書き等ではないもの
+                comments.append(c)
+            if len(comments) >= 3: # 最新3件取れれば十分
+                break
+        
+        if not comments:
+            return "特に目立った話題なし"
+        
+        return " / ".join(comments)
+    except Exception:
+        return "取得不可"
+
 def get_today_chiho_races():
     JST = timezone(timedelta(hours=+9), 'JST')
-    # 🔥 当日（今日）のデータを自動取得するように変更
     today_dt = datetime.now(JST)
     
     date_str = today_dt.strftime("%Y-%m-%d")
@@ -60,6 +82,11 @@ def get_today_chiho_races():
                     dist_match = re.search(r'(\d{3,4})m', data_intro.text)
                     if dist_match: distance = int(dist_match.group(1))
 
+                # 💡 ここで掲示板にアクセス！（サーバーに負荷をかけすぎないよう1レース1回だけ）
+                print(f"   💬 {r_num}R の掲示板世論を取得中...")
+                bbs_comment = get_race_bbs(race_id)
+                time.sleep(0.5) # 連続アクセスブロック回避のための安全待機
+
                 rows = table.find_all("tr")
                 for row in rows:
                     cols = row.find_all("td")
@@ -86,10 +113,12 @@ def get_today_chiho_races():
                         "r_num": r_num, "race_name": race_name, "distance": distance,
                         "枠番": wakuban, "馬番": umaban, "馬名": horse_name, "性齢": sei_rei,
                         "斤量": kinryo, "騎手": jockey,
-                        "単勝": odds, "人気": pop
+                        "オッズ": odds, "人気": pop, # 💡 アプリ側と名前を揃えました
+                        "世論コメント": bbs_comment # 💡 拾ってきた世論データを追加
                     })
                 time.sleep(0.2)
-            except Exception:
+            except Exception as e:
+                print(f"   ⚠️ {r_num}R でエラー: {e}")
                 continue
 
     return pd.DataFrame(all_races)
@@ -98,4 +127,4 @@ if __name__ == "__main__":
     df = get_today_chiho_races()
     if not df.empty:
         df.to_csv("future_races_chiho.csv", index=False, encoding='utf-8-sig')
-        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（当日データ／枠番あり／馬体重除外）")
+        print(f"✨ 成功: {len(df)} 件のデータを保存しました！（オッズ・世論コメント追加版）")

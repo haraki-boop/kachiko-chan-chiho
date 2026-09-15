@@ -239,3 +239,35 @@ print(importances.tail(5))
 print("="*50)
 
 print(f"\n✨ 反映完了: 3連系特化Rankingモデル（{MODEL_FILE}）の出力が完了しました！")
+
+# ---------------------------------------------------------
+# 💡 追記: 学習完了後の最終モデル NDCG@5 スコア算出
+# ---------------------------------------------------------
+from sklearn.metrics import ndcg_score
+
+print("\n📊 最終モデル精度評価 (NDCG@5) を計算中...")
+
+# 全データに対する予測スコアを算出（LightGBM）
+final_preds = ranker_lgb.predict(X)
+
+# レースごとにNDCGを計算して平均を取る
+ndcg_list = []
+current_idx = 0
+
+for g_size in groups:
+    # 1レース分の正解と予測を切り出す
+    true_race = y_relevance.values[current_idx : current_idx + g_size]
+    pred_race = final_preds[current_idx : current_idx + g_size]
+    
+    # NDCG@5 (上位5頭の評価) を計算 (※正解データがすべて0点の場合は計算不可なのでスキップ)
+    if np.sum(true_race) > 0:
+        score = ndcg_score([true_race], [pred_race], k=5)
+        ndcg_list.append(score)
+        
+    current_idx += g_size
+    
+avg_ndcg = np.mean(ndcg_list) if ndcg_list else 0.0
+
+print("=" * 50)
+print(f"✨ 再チューニング完了！ 最新モデルの NDCG@5 最終スコア: {avg_ndcg:.4f}")
+print("=" * 50)

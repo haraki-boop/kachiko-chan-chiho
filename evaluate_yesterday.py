@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+import sys
 import re
 import ast
 import unicodedata
@@ -19,7 +20,7 @@ NAR_PLACES = {
 
 if not os.path.exists(MODEL_FILE) or not os.path.exists(RESULT_FILE):
     print("⚠️ 必要なファイルが見つかりません。")
-    exit()
+    sys.exit(0)
 
 def clean_horse_name(name): 
     if pd.isna(name): return ""
@@ -37,7 +38,7 @@ def clean_race_id(val):
     try: return str(int(float(val)))
     except: return str(val).strip().replace('.0', '')
 
-# 1. 結果データベースのみを読み込む
+# 1. 結果データベースの読み込み
 try:
     df_all = pd.read_csv(RESULT_FILE, low_memory=False, encoding='utf-8')
 except UnicodeDecodeError:
@@ -45,6 +46,18 @@ except UnicodeDecodeError:
 
 df_all['race_id_clean'] = df_all['race_id'].apply(clean_race_id)
 df_all['date_dt'] = pd.to_datetime(df_all.get('date'), errors='coerce').fillna(pd.to_datetime('2020-01-01'))
+
+# 着順カラムの柔軟な検索
+rank_col = None
+for c in ['着順_num', '着順', 'rank', 'target_rank', 'rank_num']:
+    if c in df_all.columns:
+        rank_col = c
+        break
+
+if not rank_col:
+    df_all['target_rank_tmp'] = np.nan
+else:
+    df_all['target_rank_tmp'] = df_all[rank_col].apply(parse_rank)
 
 # 🌟 データベースの中から「一番最新の日付（昨日）」を自動抽出
 latest_date = df_all['date_dt'].max()
@@ -54,9 +67,10 @@ print(f"📅 評価対象日: {latest_date.strftime('%Y-%m-%d')} のレースを
 df_result = df_all[df_all['date_dt'] < latest_date].copy()
 df_future = df_all[df_all['date_dt'] == latest_date].copy()
 
-if df_future.empty:
-    print("⚠️ 評価対象データが存在しません。")
-    exit()
+# 💡 着順データが未入力・空の場合はエラーにせず安全にスキップ
+if df_future.empty or df_future['target_rank_tmp'].isna().all():
+    print(f"⚠️ {latest_date.strftime('%Y-%m-%d')} の確定結果（着順データ）が未入力のため、検証をスキップします。")
+    sys.exit(0)
 
 # === df_result（過去）を使って辞書を作る ===
 df_result['馬名_clean'] = df_result['馬名'].astype(str).apply(clean_horse_name)
@@ -65,8 +79,6 @@ trainer_col = df_result.get('調教師', df_result['騎手_clean'])
 df_result['trainer_clean'] = trainer_col.astype(str).apply(clean_horse_name)
 df_result['jockey_trainer_combo'] = df_result['騎手_clean'] + "_" + df_result['trainer_clean']
 
-rank_col = '着順_num' if '着順_num' in df_result.columns else '着順'
-df_result['target_rank_tmp'] = df_result[rank_col].apply(parse_rank)
 df_result['target_win'] = (df_result['target_rank_tmp'] == 1.0).astype(int)
 
 df_result['first_corner_raw'] = pd.to_numeric(df_result.get('first_corner', df_result.get('1角')), errors='coerce').fillna(5.0)
@@ -150,7 +162,7 @@ m_cat = saved.get('model_rank_cat')
 
 if not m_lgb and not m_xgb and not m_cat:
     print("⚠️ エラー: Rankingモデルが見つかりません。")
-    exit()
+    sys.exit(0)
 
 # 3. 評価データ（df_future）へ特徴量を結合
 df_future['馬名_clean'] = df_future['馬名'].astype(str).apply(clean_horse_name)
@@ -210,18 +222,47 @@ race_mean_prize = df_future.groupby('race_id_clean')['horse_prize_avg'].transfor
 df_future['race_prize_relative'] = df_future['horse_prize_avg'] / race_mean_prize
 df_future['race_prize_rank'] = df_future.groupby('race_id_clean')['horse_prize_avg'].rank(ascending=False, method='min')
 
-df_future['prev_time_index_avg'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_time_index_avg', 100.0))
-df_future['prev_start_index_avg'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_start_index_avg', 50.0))
-df_future['prev_last3f_index_avg'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_last3f_index_avg', 50.0))
-df_future['dist_change_num'] = pd.to_numeric(df_future.get('dist_change', pd.Series([0.0]*len(df_future))), errors='coerce').fillna(0.0)
+# 💡 特徴量マッピング（AIモデルが求める列名へ完全対応）
+dict_feature_mapping = {
+    'first_corner': ['prev_1c'],
+    'last_corner': ['prev_last_corner'],
+    'horse_prize_avg': ['horse_prize_avg'],
+    'prev_time_index_avg': ['eff_my_time_idx', 'prev_my_time_idx', 'best_time_idx', 'prev_time_index_avg'],
+    'prev_start_index_avg': ['eff_my_start_idx', 'prev_my_start_idx', 'prev_start_index_avg'],
+    'prev_time_sec': ['prev_time_sec'],
+    'prev_last3f_sec': ['prev_last3f_sec', 'eff_my_last3f_idx', 'prev_my_last3f_idx', 'best_last3f_idx'],
+    'horse_career_runs': ['horse_career_runs'],
+    'prev_prize_log': ['prev_prize', 'prize_num']
+}
 
+for dict_key, model_cols in dict_feature_mapping.items():
+    vals = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get(dict_key, np.nan))
+    for m_col in model_cols:
+        df_future[m_col] = vals
+
+df_future['dist_change_num'] = pd.to_numeric(df_future.get('dist_change', pd.Series([0.0]*len(df_future))), errors='coerce').fillna(0.0)
 df_future['prev_class_weighted_score'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_class_weighted_score', 0.0))
 df_future['prev_stall_rate'] = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get('prev_stall_rate', 0.0))
-
 df_future['馬番_num'] = pd.to_numeric(df_future.get('馬番'), errors='coerce').fillna(0)
 
-# 4. 推論実行
-X_future = df_future[features].fillna(0.0).astype(float)
+# 💡 レース内差分カラム（_race_diff / _race_zscore）の動的計算
+base_diff_cols = [c.replace('_race_diff', '') for c in features if c.endswith('_race_diff')]
+for col in base_diff_cols:
+    if col in df_future.columns:
+        mean_v = df_future.groupby('race_id_clean')[col].transform('mean')
+        std_v = df_future.groupby('race_id_clean')[col].transform('std').fillna(1.0).replace(0.0, 1.0)
+        df_future[f'{col}_race_diff'] = df_future[col] - mean_v
+        df_future[f'{col}_race_zscore'] = (df_future[col] - mean_v) / std_v
+
+# 4. 推論実行（安全な入力行列の作成）
+X_future = pd.DataFrame(index=df_future.index)
+for col in features:
+    if col in df_future.columns:
+        X_future[col] = pd.to_numeric(df_future[col], errors='coerce').fillna(0.0)
+    else:
+        X_future[col] = 0.0
+
+X_future = X_future.astype(float)
 
 preds = []
 if m_lgb and hasattr(m_lgb, 'predict'): preds.append(m_lgb.predict(X_future))
@@ -232,10 +273,10 @@ if preds:
     df_future['raw_score'] = np.mean(preds, axis=0)
 else:
     print("⚠️ 予測に失敗しました。")
-    exit()
+    sys.exit(0)
 
-# 5. 買い目生成 & 答え合わせ（自らのデータ内で結果照合）
-df_future['target_rank'] = df_future[rank_col].apply(parse_rank)
+# 5. 買い目生成 & 答え合わせ
+df_future['target_rank'] = df_future['target_rank_tmp']
 
 def parse_payout(payout_str):
     try:
