@@ -28,10 +28,6 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3); margin-bottom: 25px; border: 2px solid #d35400;
     }
     
-    .bias-box {
-        background-color: #e8f4f8; padding: 15px; border-radius: 8px; border: 1px solid #bce0ee; margin-bottom: 15px;
-    }
-
     .table-container { width: 100%; overflow-x: auto; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); background-color: #ffffff; }
     .kachi-table { width: 100%; border-collapse: collapse; background-color: #ffffff; white-space: nowrap; }
     .kachi-table thead tr { background: linear-gradient(90deg, #d9788f, #e895a7); color: #ffffff !important; font-weight: bold; }
@@ -64,9 +60,6 @@ FUTURE_CSV = "future_races_chiho.csv"
 CACHE_FILE = "app_cache_chiho.pkl"
 NAR_PLACES = {"30": "門別", "35": "盛岡", "36": "水沢", "42": "浦和", "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松", "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀", "65": "帯広"}
 
-# ==========================================
-# 📦 データロード
-# ==========================================
 @st.cache_data
 def load_future_data():
     if os.path.exists(FUTURE_CSV):
@@ -75,7 +68,6 @@ def load_future_data():
                 df = pd.read_csv(FUTURE_CSV, dtype={'race_id': str}, low_memory=False, encoding=enc)
                 if not df.empty:
                     df['race_id'] = pd.to_numeric(df['race_id'], errors='coerce').fillna(0).astype(np.int64).astype(str)
-                    
                     df['place_code'] = df['race_id'].astype(str).str[4:6]
                     df['place_name'] = df['place_code'].map(NAR_PLACES).fillna("地方")
                     df['r_num'] = pd.to_numeric(df['race_id'].str[10:12], errors='coerce').fillna(1).astype(int)
@@ -102,25 +94,6 @@ if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_c
     st.cache_resource.clear()
     st.rerun()
 
-# 💡 ここで馬場状態・バイアス選択UIを復元[cite: 6]
-st.sidebar.header("🌦 馬場・バイアス設定")
-track_cond = st.sidebar.selectbox("馬場状態", ["良", "稍重", "重", "不良"])
-
-if track_cond in ["良", "稍重"]:
-    bias_direction = st.sidebar.radio("バイアス（良〜稍重）", ["フラット", "前有利 (イン前残り)", "外差し有利"])
-else:
-    bias_direction = st.sidebar.radio("バイアス（重〜不良）", ["フラット", "前有利 (時計勝負)", "外差し有利 (泥被りNG)"])
-
-if bias_direction == "フラット":
-    st.sidebar.info("標準的な予想を行います。")
-    bias_info = "バイアスなし（フラット）"
-else:
-    st.sidebar.warning(f"⚠️ {bias_direction} バイアスを適用中")
-    bias_info = bias_direction
-
-# ==========================================
-# 📊 UI レンダリング
-# ==========================================
 def get_mark(idx):
     if idx == 0: return "◎ 本命"
     elif idx == 1: return "◯ 対抗"
@@ -164,14 +137,15 @@ def generate_beautiful_table(disp_df):
         is_missing = False
         try:
             t_f, s_f = float(t_idx_val), float(s_idx_val)
-            if pd.isna(t_f) or pd.isna(s_f) or (t_f == 100.0 and s_f == 50.0) or (t_f == 0.0 and s_f == 0.0):
+            # データなし馬が不当に評価されないための判定（デフォルト値が40.0なら欠損扱いにする）
+            if pd.isna(t_f) or pd.isna(s_f) or (t_f == 40.0 and s_f == 50.0) or (t_f == 0.0 and s_f == 0.0) or (t_f == 100.0 and s_f == 50.0):
                 is_missing = True
         except:
             is_missing = True
 
         if is_missing:
             idx_str = "<span class='missing-data'>データ無</span>"
-            t_idx = 100
+            t_idx = 40
         else:
             t_idx = int(t_f)
             s_idx = int(s_f)
@@ -231,36 +205,13 @@ if st.session_state['selected_race_id']:
     target_id = st.session_state['selected_race_id']
     st.markdown("---")
     
-    # 💡 選択されたバイアスを表示領域にも反映[cite: 6]
-    st.markdown(f"""
-    <div class='bias-box'>
-        <b>📌 現在の馬場設定:</b> {track_cond} / <b>バイアス:</b> {bias_info}
-    </div>
-    """, unsafe_allow_html=True)
-    
     if target_id not in cache_data:
         st.error(f"⚠️ このレース（{target_id}）の予測キャッシュが見つかりません。")
     else:
         scored_df = pd.DataFrame(cache_data[target_id])
         
-        # 💡 バイアス補正を適用[cite: 6]
         if 'score_disp' in scored_df.columns:
             scored_df['score_disp'] = pd.to_numeric(scored_df['score_disp'], errors='coerce').fillna(50)
-            
-            for idx, r in scored_df.iterrows():
-                kyaku = r.get('脚質', '-')
-                base_score = r['score_disp']
-                adj = 0
-                
-                if "前有利" in bias_info:
-                    if kyaku in ["逃", "先"]: adj = 3
-                    elif kyaku == "追": adj = -2
-                elif "外差し" in bias_info:
-                    if kyaku in ["差", "追"]: adj = 3
-                    elif kyaku == "逃": adj = -2
-                
-                scored_df.at[idx, 'score_disp'] = base_score + adj
-
             scored_df = scored_df.sort_values(by='score_disp', ascending=False).reset_index(drop=True)
         
         info = df_future[df_future['race_id'].astype(str) == target_id].iloc[0] if not df_future.empty else {'place_name': '地方', 'r_num': '?', 'race_name': ''}
@@ -270,9 +221,9 @@ if st.session_state['selected_race_id']:
         missing_count = 0
         for _, row_data in scored_df.iterrows():
             try:
-                t = float(row_data.get('eff_my_time_idx', row_data.get('prev_my_time_idx', 100)))
+                t = float(row_data.get('eff_my_time_idx', row_data.get('prev_my_time_idx', 40)))
                 s = float(row_data.get('eff_my_start_idx', row_data.get('custom_start_index', 50)))
-                if (t == 100.0 and s == 50.0) or pd.isna(t) or t == 0.0:
+                if (t == 40.0 and s == 50.0) or pd.isna(t) or t == 0.0 or (t == 100.0 and s == 50.0):
                     missing_count += 1
             except:
                 missing_count += 1
@@ -357,7 +308,7 @@ if st.session_state['selected_race_id']:
                     f"馬番:{u_n:02d} | 馬名:{row.get('馬名', row.get('馬名_clean', ''))} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', row.get('騎手_clean', ''))} | 人気/オッズ:{pop}人気({odds}倍) | ネットの評価:{bbs}"
                 )
 
-            # 💡 レース距離と設定された馬場情報を取得し、Geminiに馬場・コース適性を考慮させる指示
+            # 🌟 修正: 距離情報を取得し、Geminiに馬場・コース適性を考慮させる指示を復活
             race_distance = info.get('distance', '不明')
             
             sys_inst = f"""あなたは地方競馬の事情通であり、世論や馬のポテンシャルを熟知した予想家「勝ち子ちゃん（Gemini）」です。
@@ -381,10 +332,9 @@ if st.session_state['selected_race_id']:
             with st.spinner("🎀 Geminiがリアルタイムの世論とオッズを加味して思考中..."):
                 try:
                     client = genai.Client(api_key=api_key_input)
-                    # 💡 レース距離とユーザーが設定した馬場情報を渡す
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
-                        contents=f"対象レース: {race_display_name} (距離: {race_distance}m) / 想定馬場: {track_cond} ({bias_info})\n\n対象馬データ:\n" + "\n".join(table_summary),
+                        contents=f"対象レース: {race_display_name} (距離: {race_distance}m)\n\n対象馬データ:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.7) 
                     )
                     resp_text = response.text
