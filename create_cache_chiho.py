@@ -21,9 +21,8 @@ def get_kyakushitsu(fc):
 model_data = joblib.load(MODEL_FILE)
 features = model_data.get('features', [])
 
-# 1. 辞書のロード
+# 1. 辞書のロード (騎手・調教師データのみ使用)
 loaded_dicts = joblib.load(DICT_FILE) if os.path.exists(DICT_FILE) else {}
-horse_dict = loaded_dicts.get('horse_dict', {})
 jockey_dict = loaded_dicts.get('jockey_dict', {})
 trainer_dict = loaded_dicts.get('trainer_dict', {})
 jockey_rentai_dict = loaded_dicts.get('jockey_rentai_dict', {})
@@ -33,7 +32,6 @@ df_past = pd.read_csv(CSV_PAST_V2, low_memory=False)
 horse_col = '馬名' if '馬名' in df_past.columns else 'horse_name'
 df_past['馬名_clean'] = df_past[horse_col].astype(str).apply(clean_horse_name)
 
-# 💡 修正ポイント1: 日付のパースを強化（どんな形式でも拾う）
 date_col = 'date_parsed' if 'date_parsed' in df_past.columns else 'date'
 df_past['date_dt'] = pd.to_datetime(df_past[date_col], errors='coerce')
 
@@ -43,14 +41,9 @@ for col in features:
             df_past[col] = df_past[col].astype(str).str.replace(',', '', regex=False)
         df_past[col] = pd.to_numeric(df_past[col], errors='coerce')
 
-# 💡 修正ポイント2: 単にソートして一番下を取るのではなく、
-# 「数値がちゃんと入っている行」を馬ごとに前方にコピー（ffill）してから、
-# 日付順に並べ直して一番新しい（最後の）行を取得する。
 df_past = df_past.sort_values(['馬名_clean', 'date_dt'])
 num_cols = df_past.select_dtypes(include=[np.number]).columns.tolist()
-# 馬ごとに数値を前詰め（空欄を過去のレースの実績で埋める）
 df_past[num_cols] = df_past.groupby('馬名_clean')[num_cols].ffill()
-# その上で、馬ごとに一番下（＝最新）の行を取得
 df_past_latest = df_past.groupby('馬名_clean').last().reset_index()
 
 # 3. 出馬表ロード
@@ -89,33 +82,16 @@ df_future['weight_num'] = df_future['body_weight']
 df_future['horse_weight'] = df_future['body_weight']
 df_future['kinryo_weight_ratio'] = df_future['kinryo_num'] / df_future['body_weight']
 
-dict_feature_mapping = {
-    'first_corner': ['prev_1c'],
-    'last_corner': ['prev_last_corner'],
-    'horse_prize_avg': ['horse_prize_avg'],
-    'prev_time_index_avg': ['eff_my_time_idx', 'prev_my_time_idx', 'best_time_idx'],
-    'prev_start_index_avg': ['eff_my_start_idx', 'prev_my_start_idx'],
-    'prev_time_sec': ['prev_time_sec'],
-    'prev_last3f_sec': ['prev_last3f_sec', 'eff_my_last3f_idx', 'prev_my_last3f_idx', 'best_last3f_idx'],
-    'horse_career_runs': ['horse_career_runs'],
-    'prev_prize_log': ['prev_prize', 'prize_num']
-}
-
-for dict_key, model_cols in dict_feature_mapping.items():
-    vals = df_future['馬名_clean'].apply(lambda x: horse_dict.get(x, {}).get(dict_key, np.nan))
-    for m_col in model_cols:
-        df_future[m_col] = vals
-
+# 💡 騎手・調教師の勝率だけは辞書から取得し、問題の dict_feature_mapping は削除！
 df_future['jockey_win_rate'] = df_future['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
 df_future['jockey_rentai_rate'] = df_future['騎手_clean'].apply(lambda x: jockey_rentai_dict.get(x, 0.10))
 df_future['trainer_win_rate'] = df_future['trainer_clean'].apply(lambda x: trainer_dict.get(x, 0.05))
 
-# 4. 出馬表＋辞書データに対し、補完用の過去データをマージ
+# 4. 出馬表＋補完用の過去データをマージ
 cols_to_drop_from_past = [c for c in df_past_latest.columns if c in df_future.columns and c != '馬名_clean']
 df_past_clean = df_past_latest.drop(columns=cols_to_drop_from_past)
 df_merged = pd.merge(df_future, df_past_clean, on='馬名_clean', how='left')
 
-# 💡 修正ポイント3: マージ後、辞書にも過去データにも入っていなかった「真の空欄」にだけデフォルト値を入れる
 time_idx_cols = ['eff_my_time_idx', 'prev_my_time_idx', 'best_time_idx']
 start_idx_cols = ['eff_my_start_idx', 'prev_my_start_idx']
 

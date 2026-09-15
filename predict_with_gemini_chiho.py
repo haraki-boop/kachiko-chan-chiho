@@ -104,7 +104,6 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    # 💡 変更点: 表のヘッダーに「人気(オッズ)」を追加
     html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
@@ -125,7 +124,6 @@ def generate_beautiful_table(disp_df):
         j_win = float(r.get('jockey_win_rate', 0.0)) * 100
         jockey_str = f"{jockey_name}<br><span style='font-size:0.8em; color:#666;'>({j_win:.1f}%)</span>"
         
-        # 💡 変更点: 将来取得する「人気」と「オッズ」の表示ロジック
         pop_val = r.get('人気', r.get('popularity', '-'))
         odds_val = r.get('オッズ', r.get('odds', '-'))
         try:
@@ -139,14 +137,15 @@ def generate_beautiful_table(disp_df):
         is_missing = False
         try:
             t_f, s_f = float(t_idx_val), float(s_idx_val)
-            if pd.isna(t_f) or pd.isna(s_f) or (t_f == 100.0 and s_f == 50.0) or (t_f == 0.0 and s_f == 0.0):
+            # データなし馬が不当に評価されないための判定（デフォルト値が40.0なら欠損扱いにする）
+            if pd.isna(t_f) or pd.isna(s_f) or (t_f == 40.0 and s_f == 50.0) or (t_f == 0.0 and s_f == 0.0) or (t_f == 100.0 and s_f == 50.0):
                 is_missing = True
         except:
             is_missing = True
 
         if is_missing:
             idx_str = "<span class='missing-data'>データ無</span>"
-            t_idx = 100
+            t_idx = 40
         else:
             t_idx = int(t_f)
             s_idx = int(s_f)
@@ -222,9 +221,9 @@ if st.session_state['selected_race_id']:
         missing_count = 0
         for _, row_data in scored_df.iterrows():
             try:
-                t = float(row_data.get('eff_my_time_idx', row_data.get('prev_my_time_idx', 100)))
+                t = float(row_data.get('eff_my_time_idx', row_data.get('prev_my_time_idx', 40)))
                 s = float(row_data.get('eff_my_start_idx', row_data.get('custom_start_index', 50)))
-                if (t == 100.0 and s == 50.0) or pd.isna(t) or t == 0.0:
+                if (t == 40.0 and s == 50.0) or pd.isna(t) or t == 0.0 or (t == 100.0 and s == 50.0):
                     missing_count += 1
             except:
                 missing_count += 1
@@ -297,7 +296,6 @@ if st.session_state['selected_race_id']:
             neutral_df['u_num_temp'] = pd.to_numeric(neutral_df.get('馬番_num', neutral_df.get('馬番', neutral_df.get('gate_num', 0))), errors='coerce').fillna(99).astype(int)
             neutral_df = neutral_df.sort_values('u_num_temp')
 
-            # 🌟 変更点: Geminiに「オッズ」と「世論コメント」を渡す仕組み
             for idx, row in neutral_df.iterrows():
                 u_n = row['u_num_temp']
                 if u_n == 99: continue
@@ -310,17 +308,19 @@ if st.session_state['selected_race_id']:
                     f"馬番:{u_n:02d} | 馬名:{row.get('馬名', row.get('馬名_clean', ''))} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', row.get('騎手_clean', ''))} | 人気/オッズ:{pop}人気({odds}倍) | ネットの評価:{bbs}"
                 )
 
-            # 🌟 変更点: プロンプトに世論とオッズを活用するように指示を追加
+            # 🌟 修正: 距離情報を取得し、Geminiに馬場・コース適性を考慮させる指示を復活
+            race_distance = info.get('distance', '不明')
+            
             sys_inst = f"""あなたは地方競馬の事情通であり、世論や馬のポテンシャルを熟知した予想家「勝ち子ちゃん（Gemini）」です。
 出走馬の基本データに加えて、「現在のオッズ・人気」および「ネット掲示板の世論・評価」をお渡しします。
 
 【🚨あなたの役割と絶対厳守のルール🚨】
 今回のあなたの予想では、システムが算出した指数やデータは一切考慮しないでください。
-提供された情報（特に世間の評価やオッズの偏り）と、あなたが持つ「血統の傾向」「地方競馬のセオリー」「直感」を掛け合わせ、完全に独立した独自の予想を行ってください。
-「ネットでは過剰人気しているから危険」「世論は低評価だが血統的に狙い目」など、オッズと世論の裏をかくような自由で鋭い思考を歓迎します。
+提供された情報（特に世間の評価やオッズの偏り）と、あなたが持つ「血統の傾向」「地方競馬のセオリー（馬場やコース適性）」「直感」を掛け合わせ、完全に独立した独自の予想を行ってください。
+「ネットでは過剰人気しているから危険」「世論は低評価だが血統や馬場適性的に狙い目」など、オッズと世論の裏をかくような自由で鋭い思考を歓迎します。
 
 【回答の構成】
-🌸 Geminiの独自見解（世論、オッズの歪み、血統に基づく考察）
+🌸 Geminiの独自見解（世論、オッズの歪み、血統、馬場・コース適性に基づく考察）
 🎯 Gemini独自の印と解説
 ※【重要】システムが馬番を自動抽出するため、必ず以下のフォーマット通りに記述してください。馬番は必ず半角数字にし、[ ]で囲んでください。
 ◎ [馬番] 馬名 （理由）
@@ -334,7 +334,7 @@ if st.session_state['selected_race_id']:
                     client = genai.Client(api_key=api_key_input)
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
-                        contents=f"対象レース: {race_display_name}\n\n対象馬データ:\n" + "\n".join(table_summary),
+                        contents=f"対象レース: {race_display_name} (距離: {race_distance}m)\n\n対象馬データ:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.7) 
                     )
                     resp_text = response.text
