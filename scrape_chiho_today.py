@@ -16,7 +16,6 @@ def clean_text(text):
     if not text: return ""
     return re.sub(r'[\s\u3000]+', '', str(text)).strip()
 
-# 💡 新機能：レース掲示板から最新の世論（コメント）を拾ってくる関数
 def get_race_bbs(race_id):
     url = f"https://nar.netkeiba.com/race/bbs.html?race_id={race_id}"
     try:
@@ -24,12 +23,11 @@ def get_race_bbs(race_id):
         soup = BeautifulSoup(res.content, 'html.parser')
         
         comments = []
-        # 掲示板のテキストが入っていそうなクラスを幅広く狙い撃ち
         for item in soup.find_all(["div", "p", "span"], class_=re.compile(r'Comment_Text|Bbs_Text|txt|comment', re.I)):
             c = clean_text(item.text)
-            if c and len(c) >= 5 and "※" not in c: # 5文字以上で、システムの注意書き等ではないもの
+            if c and len(c) >= 5 and "※" not in c:
                 comments.append(c)
-            if len(comments) >= 3: # 最新3件取れれば十分
+            if len(comments) >= 3:
                 break
         
         if not comments:
@@ -82,10 +80,9 @@ def get_today_chiho_races():
                     dist_match = re.search(r'(\d{3,4})m', data_intro.text)
                     if dist_match: distance = int(dist_match.group(1))
 
-                # 💡 ここで掲示板にアクセス！（サーバーに負荷をかけすぎないよう1レース1回だけ）
                 print(f"   💬 {r_num}R の掲示板世論を取得中...")
                 bbs_comment = get_race_bbs(race_id)
-                time.sleep(0.5) # 連続アクセスブロック回避のための安全待機
+                time.sleep(0.5)
 
                 rows = table.find_all("tr")
                 for row in rows:
@@ -101,20 +98,30 @@ def get_today_chiho_races():
                     kinryo = clean_text(cols[5].text)
                     jockey = clean_text(cols[6].text)
                     
-                    odds_td = row.find("td", id=re.compile(r'odds-', re.I))
-                    odds = clean_text(odds_td.text) if odds_td else "15.0"
-                    if odds in ["---", "", "0.0"]: odds = "15.0"
+                    # 💡 【修正ポイント】ご提示いただいた画像の通り、列の場所（class）を正しく指定！
+                    odds = "15.0"
+                    pop = "99"
                     
-                    pop_td = row.find("td", id=re.compile(r'pop-', re.I))
-                    pop = clean_text(pop_td.text) if pop_td else "99"
+                    # class名に "Popular" が含まれる <td> をすべて取得
+                    pop_tds = row.find_all("td", class_=re.compile(r'Popular', re.I))
+                    if len(pop_tds) >= 2:
+                        odds = clean_text(pop_tds[0].text)  # 1つ目がオッズ（Popular_Txt R）
+                        pop = clean_text(pop_tds[1].text)   # 2つ目が人気（Popular_Txt C）
+                    elif len(cols) >= 9:
+                        # 念のための予備ルート（列番号から直接取得）
+                        odds = clean_text(cols[7].text)
+                        pop = clean_text(cols[8].text)
+
+                    if odds in ["---", "", "0.0"]: odds = "15.0"
+                    if pop in ["---", "", "0"]: pop = "99"
 
                     all_races.append({
                         "date": date_str, "race_id": str(race_id), "place_name": place_name,
                         "r_num": r_num, "race_name": race_name, "distance": distance,
                         "枠番": wakuban, "馬番": umaban, "馬名": horse_name, "性齢": sei_rei,
                         "斤量": kinryo, "騎手": jockey,
-                        "オッズ": odds, "人気": pop, # 💡 アプリ側と名前を揃えました
-                        "世論コメント": bbs_comment # 💡 拾ってきた世論データを追加
+                        "オッズ": odds, "人気": pop,
+                        "世論コメント": bbs_comment
                     })
                 time.sleep(0.2)
             except Exception as e:
