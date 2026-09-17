@@ -6,7 +6,6 @@ import numpy as np
 import unicodedata
 
 CSV_FUTURE = "future_races_chiho.csv"
-CSV_PAST = "ml_target_data_chiho.csv"
 MODEL_FILE = "keiba_ai_model_nar_ensemble.pkl"
 DICT_FILE = "past_dicts.pkl"
 CACHE_FILE = "app_cache_chiho.pkl"
@@ -32,18 +31,26 @@ def safe_read_csv(filepath):
         except: continue
     return pd.DataFrame()
 
+def safe_read_past_data():
+    """V3, V2, 無印の順で、最も新しいリッチ特徴量データを確実に読み込む"""
+    for f in ["ml_target_data_chiho_v3.csv", "ml_target_data_chiho_v2.csv", "ml_target_data_chiho.csv"]:
+        if os.path.exists(f):
+            df = safe_read_csv(f)
+            if not df.empty: return df
+    return pd.DataFrame()
+
 def main():
     if not os.path.exists(MODEL_FILE) or not os.path.exists(CSV_FUTURE): return
 
     model_data = joblib.load(MODEL_FILE)
     features = model_data.get('features', [])
     
-    # 🚨復活: 辞書データの読み込み（連対率0%の解消）
+    # 🚨 復活: 辞書データの読み込み（連対率0%バグを解消）
     loaded_dicts = joblib.load(DICT_FILE) if os.path.exists(DICT_FILE) else {}
     jockey_dict = loaded_dicts.get('jockey_dict', {})
-    trainer_dict = loaded_dicts.get('trainer_dict', {})
     jockey_rentai_dict = loaded_dicts.get('jockey_rentai_dict', {})
 
+    # 1. 出馬表（マスター）の読み込み
     df_future_master = safe_read_csv(CSV_FUTURE)
     if df_future_master.empty: return
 
@@ -52,18 +59,16 @@ def main():
     df_future_master['race_id_clean'] = pd.to_numeric(df_future_master['race_id'], errors='coerce').fillna(0).astype(np.int64).astype(str)
 
     jockey_col_f = '騎手' if '騎手' in df_future_master.columns else 'jockey'
-    if jockey_col_f in df_future_master.columns:
-        df_future_master['騎手_clean'] = df_future_master[jockey_col_f].astype(str).apply(clean_horse_name)
-    else:
-        df_future_master['騎手_clean'] = ""
+    df_future_master['騎手_clean'] = df_future_master[jockey_col_f].astype(str).apply(clean_horse_name) if jockey_col_f in df_future_master.columns else ""
 
+    # 推論用のデータフレームを作成（ここで全カラムを保持し続ける）
     df_calc = df_future_master.copy()
 
-    # 🚨復活: 勝率・連対率のセット
     df_calc['jockey_win_rate'] = df_calc['騎手_clean'].apply(lambda x: jockey_dict.get(x, 0.05))
     df_calc['jockey_rentai_rate'] = df_calc['騎手_clean'].apply(lambda x: jockey_rentai_dict.get(x, 0.10))
 
-    df_past = safe_read_csv(CSV_PAST)
+    # 2. 過去の指数・実績データを結合（「データ無」バグを解消）
+    df_past = safe_read_past_data()
     if not df_past.empty:
         horse_col_p = '馬名_clean' if '馬名_clean' in df_past.columns else ('馬名' if '馬名' in df_past.columns else df_past.columns[0])
         df_past['馬名_clean'] = df_past[horse_col_p].astype(str).apply(clean_horse_name)
@@ -74,71 +79,64 @@ def main():
         
         df_calc = pd.merge(df_calc, df_past_clean, on='馬名_clean', how='left')
 
+    # 3. AI推論の実行（データの行を動かさずに直接書き込む）
+    df_calc['rank_score_raw'] = np.nan
+    df_calc['score_disp'] = np.nan
+    df_calc['脚質'] = "-"
+
     relative_bases = {f[:-10] for f in features if f.endswith('_race_diff')} | \
                      {f[:-12] for f in features if f.endswith('_race_zscore')} | \
                      {f[:-10] for f in features if f.endswith('_race_rank')}
 
-    ai_results = []
-    races = df_calc['race_id_clean'].unique()
-
-    for rid in races:
+    for rid in df_calc['race_id_clean'].unique():
         if str(rid) == '0': continue
-        race_df = df_calc[df_calc['race_id_clean'] == rid].copy()
+        mask = df_calc['race_id_clean'] == rid
+        race_df = df_calc[mask].copy()
         
         for base_col in relative_bases:
             if base_col in race_df.columns:
                 vals = pd.to_numeric(race_df[base_col], errors='coerce')
                 mean_v, std_v = vals.mean(skipna=True), vals.std(ddof=0, skipna=True)
                 std_v = std_v if pd.notna(std_v) and std_v != 0 else 1.0
-                race_df[f'{base_col}_race_diff'] = vals - (mean_v if pd.notna(mean_v) else 0)
-                race_df[f'{base_col}_race_zscore'] = race_df[f'{base_col}_race_diff'] / std_v
-                race_df[f'{base_col}_race_rank'] = vals.rank(ascending=False, method='min')
+                
+                diff = vals - (mean_v if pd.notna(mean_v) else 0)
+                df_calc.loc[mask, f'{base_col}_race_diff'] = diff
+                df_calc.loc[mask, f'{base_col}_race_zscore'] = diff / std_v
+                df_calc.loc[mask, f'{base_col}_race_rank'] = vals.rank(ascending=False, method='min')
 
         X_pred = pd.DataFrame(index=race_df.index)
         for col in features:
-            X_pred[col] = pd.to_numeric(race_df.get(col, np.nan), errors='coerce')
+            X_pred[col] = pd.to_numeric(df_calc.loc[mask, col] if col in df_calc.columns else np.nan, errors='coerce')
 
         preds = [model_data[m].predict(X_pred.astype(float)) for m in ['model_rank_lgb', 'model_rank_xgb', 'model_rank_cat'] if m in model_data and model_data[m] is not None]
 
         if preds:
-            race_df['rank_score_raw'] = np.mean(preds, axis=0)
-            score_mean = race_df['rank_score_raw'].mean(skipna=True)
-            score_std = race_df['rank_score_raw'].std(ddof=0, skipna=True)
+            raw_scores = np.mean(preds, axis=0)
+            score_mean = np.nanmean(raw_scores)
+            score_std = np.nanstd(raw_scores, ddof=0)
             score_std = score_std if pd.notna(score_std) and score_std != 0 else 1.0
-            race_df['score_disp'] = np.round(((race_df['rank_score_raw'] - (score_mean if pd.notna(score_mean) else 0)) / score_std) * 10 + 50, 1)
-        else:
-            race_df['rank_score_raw'] = np.nan
-            race_df['score_disp'] = np.nan
+            
+            df_calc.loc[mask, 'rank_score_raw'] = raw_scores
+            df_calc.loc[mask, 'score_disp'] = np.round(((raw_scores - (score_mean if pd.notna(score_mean) else 0)) / score_std) * 10 + 50, 1)
 
         col_kyaku = 'prev1_1c' if 'prev1_1c' in race_df.columns else ('first_corner' if 'first_corner' in race_df.columns else None)
-        race_df['脚質'] = race_df[col_kyaku].apply(get_kyakushitsu) if col_kyaku and col_kyaku in race_df.columns else "-"
+        if col_kyaku and col_kyaku in race_df.columns:
+            df_calc.loc[mask, '脚質'] = race_df[col_kyaku].apply(get_kyakushitsu).values
 
-        # 🚨修正: 過去の指数実績や適性データをすべて含めた状態で保存する
-        ai_results.append(race_df)
+    # 4. 全計算終了後、表示テキストのみを出馬表マスターから絶対復旧
+    for col in ['馬番', '馬名', '性齢', '斤量', '騎手', '調教師', '馬体重', 'オッズ', '人気', '世論コメント']:
+        if col in df_future_master.columns:
+            df_calc[col] = df_future_master[col]
+            
+    df_calc = df_calc.fillna("-")
 
-    if ai_results:
-        df_final = pd.concat(ai_results, ignore_index=True)
-        # 🚨修正: 計算結果の「表示テキスト部分」だけを、絶対に崩れないマスターで安全に上書き復元する
-        for col in ['馬番', '馬名', '性齢', '斤量', '騎手', '調教師', '馬体重', 'オッズ', '人気', '世論コメント']:
-            if col in df_future_master.columns:
-                df_final[col] = df_future_master[col]
-    else:
-        df_final = df_future_master.copy()
-        df_final['rank_score_raw'] = np.nan
-        df_final['score_disp'] = "-"
-        df_final['脚質'] = "-"
-
-    # フロント表示エラー防止
-    df_final = df_final.fillna("-")
-
+    # キャッシュ作成
     cache_data = {}
-    for rid in df_final['race_id_clean'].unique():
+    for rid in df_calc['race_id_clean'].unique():
         if str(rid) == '0': continue
-        race_final = df_final[df_final['race_id_clean'] == rid].copy()
-        
+        race_final = df_calc[df_calc['race_id_clean'] == rid].copy()
         race_final['sort_key'] = pd.to_numeric(race_final['rank_score_raw'], errors='coerce')
         race_final = race_final.sort_values(by=['sort_key'], ascending=False, na_position='last').drop(columns=['sort_key'])
-        
         cache_data[str(rid)] = race_final.to_dict('records')
 
     joblib.dump(cache_data, CACHE_FILE)
