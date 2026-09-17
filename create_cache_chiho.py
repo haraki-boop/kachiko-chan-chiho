@@ -4,8 +4,6 @@ import pandas as pd
 import numpy as np
 import unicodedata
 
-# ① 蓋をしない・スキップしない
-# ファイルがなければPythonのFileNotFoundErrorで正しくクラッシュさせる
 df_future = pd.read_csv("future_races_chiho.csv", encoding='utf-8-sig')
 df_past = pd.read_csv("ml_target_data_chiho.csv", encoding='utf-8-sig')
 model_data = joblib.load("keiba_ai_model_nar_ensemble.pkl")
@@ -16,14 +14,13 @@ jockey_dict = loaded_dicts['jockey_dict']
 jockey_rentai_dict = loaded_dicts['jockey_rentai_dict']
 
 def clean_horse_name(name_val): 
-    # NaNや空白の判定をごまかさない。文字列として処理し、クリーニングする。
+    if pd.isna(name_val) or str(name_val).strip().lower() in ['nan', 'none', '']: return ""
     s = unicodedata.normalize('NFKC', str(name_val))
     s = re.sub(r'\(.*?\)|\[.*?\]|（.*?）|［.*?］', '', s)
-    s = re.sub(r'[\s・･._\u3000\t\r\n]+', '', s)
-    return s.strip().upper()
+    # create_rich_features.py と完全に一致させるため、長音「ー」とハイフンを確実に削除
+    return re.sub(r'[\s・･.\-ー_]+', '', s).strip().upper()
 
 def get_kyakushitsu(fc): 
-    # try-exceptで蓋をしない。パースエラーが起きるならデータがおかしい証拠として止める。
     fc_val = float(fc)
     if fc_val <= 2.5: return "逃"
     elif fc_val <= 4.5: return "先"
@@ -51,7 +48,6 @@ def calc_track_bias(place_code, track_cond, kyaku):
     return round(bonus, 1)
 
 def main():
-    # キーの前処理
     horse_col_f = '馬名' if '馬名' in df_future.columns else df_future.columns[0]
     df_future['馬名_clean'] = df_future[horse_col_f].astype(str).apply(clean_horse_name)
     df_future['race_id_clean'] = df_future['race_id'].astype(str)
@@ -62,7 +58,6 @@ def main():
 
     df_calc = df_future.copy()
     
-    # 辞書から直接マッピング (デフォルト値0.05等で蓋をしない。見つからなければNaNになる)
     df_calc['jockey_win_rate'] = df_calc['騎手_clean'].map(jockey_dict)
     df_calc['jockey_rentai_rate'] = df_calc['騎手_clean'].map(jockey_rentai_dict)
 
@@ -73,7 +68,6 @@ def main():
     cols_to_drop = [c for c in df_past_latest.columns if c in df_calc.columns and c != '馬名_clean']
     df_past_clean = df_past_latest.drop(columns=cols_to_drop)
     
-    # マージ
     df_calc = pd.merge(df_calc, df_past_clean, on='馬名_clean', how='left')
 
     df_calc['rank_score_raw'] = np.nan
@@ -84,7 +78,6 @@ def main():
                      {f[:-12] for f in features if f.endswith('_race_zscore')} | \
                      {f[:-10] for f in features if f.endswith('_race_rank')}
 
-    # 推論処理
     for rid in df_calc['race_id_clean'].unique():
         mask = df_calc['race_id_clean'] == rid
         race_df = df_calc[mask].copy()
@@ -116,11 +109,9 @@ def main():
             df_calc.loc[mask, 'rank_score_raw'] = raw_scores
             df_calc.loc[mask, 'score_disp_base'] = base_score
 
-        # 脚質判定
         if 'prev1_1c' in race_df.columns:
             df_calc.loc[mask, '脚質'] = race_df['prev1_1c'].apply(get_kyakushitsu).values
 
-        # 馬場ボーナス事前計算
         for cond in ['良', '稍重', '重', '不良']:
             bonus_col = f'track_bonus_{cond}'
             score_col = f'score_{cond}'
@@ -135,7 +126,6 @@ def main():
             df_calc.loc[mask, bonus_col] = bonuses
             df_calc.loc[mask, score_col] = df_calc.loc[mask, 'score_disp_base'] + bonuses
 
-    # データをそのまま出力（fillnaによる隠蔽を全削除）
     cache_data = {}
     for rid in df_calc['race_id_clean'].unique():
         race_final = df_calc[df_calc['race_id_clean'] == rid].copy()
