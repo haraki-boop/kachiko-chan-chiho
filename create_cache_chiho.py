@@ -32,32 +32,34 @@ def main():
     model_data = joblib.load(MODEL_FILE)
     features = model_data.get('features', [])
 
-    # 1. 最新過去データのロード
+    # 1. 出馬表ロード（最優先保持）
+    df_future = pd.read_csv(CSV_FUTURE, low_memory=False)
+    
+    # 馬名カラムの特定と保護
+    horse_col_f = '馬名' if '馬名' in df_future.columns else ('horse_name' if 'horse_name' in df_future.columns else df_future.columns[0])
+    df_future['馬名_display'] = df_future[horse_col_f].astype(str)
+    df_future['馬名_clean'] = df_future[horse_col_f].astype(str).apply(clean_horse_name)
+    df_future['race_id_clean'] = pd.to_numeric(df_future['race_id'], errors='coerce').fillna(0).astype(np.int64).astype(str)
+
+    # 2. 過去データのロード
     df_past = pd.read_csv(CSV_PAST, low_memory=False) if os.path.exists(CSV_PAST) else pd.DataFrame()
     
     if not df_past.empty:
-        horse_col = '馬名_clean' if '馬名_clean' in df_past.columns else ('馬名' if '馬名' in df_past.columns else 'horse_name')
-        df_past['馬名_clean'] = df_past[horse_col].astype(str).apply(clean_horse_name)
+        horse_col_p = '馬名_clean' if '馬名_clean' in df_past.columns else ('馬名' if '馬名' in df_past.columns else 'horse_name')
+        df_past['馬名_clean'] = df_past[horse_col_p].astype(str).apply(clean_horse_name)
         df_past_latest = df_past.groupby('馬名_clean').last().reset_index()
-    else:
-        df_past_latest = pd.DataFrame()
-
-    # 2. 出馬表ロード
-    df_future = pd.read_csv(CSV_FUTURE, low_memory=False)
-    df_future['馬名_clean'] = df_future['馬名'].astype(str).apply(clean_horse_name)
-    df_future['騎手_clean'] = df_future['騎手'].astype(str).str.strip()
-    df_future['調教師_clean'] = df_future.get('調教師', pd.Series("")).astype(str).str.strip()
-    df_future['race_id_clean'] = pd.to_numeric(df_future['race_id'], errors='coerce').fillna(0).astype(np.int64).astype(str)
-
-    # 3. 過去最新データと出馬表のマージ
-    if not df_past_latest.empty:
+        
+        # 出馬表にすでに存在する表示系カラムは過去データ側から除外（衝突回避）
         cols_to_drop = [c for c in df_past_latest.columns if c in df_future.columns and c != '馬名_clean']
         df_past_clean = df_past_latest.drop(columns=cols_to_drop)
         df_merged = pd.merge(df_future, df_past_clean, on='馬名_clean', how='left')
     else:
         df_merged = df_future.copy()
 
-    # 4. レース単位での動的特徴量算出 (Diff, Zscore, Rank)
+    # 表示用馬名を元データから確実に復旧
+    df_merged['馬名'] = df_merged['馬名_display']
+
+    # 3. レース単位での動的特徴量算出 (Diff, Zscore, Rank)
     cache_data = {}
     races = df_merged['race_id_clean'].unique()
 
@@ -75,7 +77,7 @@ def main():
         race_df = df_merged[df_merged['race_id_clean'] == rid].copy()
         if race_df.empty: continue
 
-        # レース内相対評価の算出（欠損はNaNのまま）
+        # レース内相対評価の算出
         for base_col in relative_bases:
             if base_col in race_df.columns:
                 vals = pd.to_numeric(race_df[base_col], errors='coerce')
@@ -109,9 +111,9 @@ def main():
             score_mean = race_df['rank_score_raw'].mean(skipna=True)
             score_std = race_df['rank_score_raw'].std(ddof=0, skipna=True)
             if pd.isna(score_std) or score_std == 0: score_std = 1.0
-            race_df['score_disp'] = np.round(((race_df['rank_score_raw'] - score_mean) / score_std) * 10 + 50).astype(object)
+            race_df['score_disp'] = np.round(((race_df['rank_score_raw'] - score_mean) / score_std) * 10 + 50, 1)
         else:
-            race_df['score_disp'] = "-"
+            race_df['score_disp'] = np.nan
             race_df['rank_score_raw'] = np.nan
 
         # 脚質表示の判定
@@ -121,19 +123,16 @@ def main():
         else:
             race_df['脚質'] = "-"
 
-        # スコアがない（NaN）の馬は最下位になるようソート
+        # ソート（予測スコアが高い順、NaNは最下位）
         race_df = race_df.sort_values(by=['rank_score_raw'], ascending=False, na_position='last').reset_index(drop=True)
         
-        # 表示用テキスト補完（数値系NaNは"-"表示化）
+        # 画面表示用に NaN を整頓
         race_df['score_disp'] = race_df['score_disp'].fillna("-")
-        for col in race_df.columns:
-            if race_df[col].dtype == object:
-                race_df[col] = race_df[col].fillna("")
 
         cache_data[str(rid)] = race_df.to_dict('records')
 
     joblib.dump(cache_data, CACHE_FILE)
-    print(f"✨ 完了: '{CACHE_FILE}' を作成しました。(データ無し馬の50補完を完全排除)")
+    print(f"✨ 完了: '{CACHE_FILE}' を更新しました。出馬表属性を完全保持しています。")
 
 if __name__ == "__main__":
     main()
