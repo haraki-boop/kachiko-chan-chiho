@@ -80,14 +80,9 @@ def load_future_data():
 @st.cache_resource
 def load_cache():
     if os.path.exists(CACHE_FILE):
-        try:
-            return joblib.load(CACHE_FILE)
-        except Exception as e:
-            st.error(f"⚠️ キャッシュ読み込みエラー: {e}")
-            return {}
-    else:
-        st.error(f"⚠️ キャッシュファイル '{CACHE_FILE}' が見つかりません。")
-        return {}
+        try: return joblib.load(CACHE_FILE)
+        except Exception: return {}
+    return {}
 
 df_future = load_future_data()
 cache_data = load_cache()
@@ -98,11 +93,7 @@ api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, ty
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("☔ 当日の馬場状態選択")
-track_condition = st.sidebar.radio(
-    "馬場状態を指定してください",
-    options=["良", "稍重", "重", "不良"],
-    index=0
-)
+track_condition = st.sidebar.radio("馬場状態を指定してください", options=["良", "稍重", "重", "不良"], index=0)
 
 if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_container_width=True): 
     st.cache_data.clear()
@@ -119,7 +110,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注 / 馬場補正</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注 / 馬場補正</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>推定連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         ai_mark = get_mark(i)
@@ -132,30 +123,37 @@ def generate_beautiful_table(disp_df):
             b_cls_gem = "badge-honmei" if "◎" in gem_mark else "badge-taikou" if "◯" in gem_mark else "badge-tana" if "▲" in gem_mark else "badge-renka" if "△" in gem_mark else "badge-tana" if "☆" in gem_mark else "badge-keshi"
             gem_str = f"<span class='badge-mark {b_cls_gem}'>{gem_mark}</span>"
 
+        # 脚質表示 (prev1_1c を使って逃/先/差/追を判定)
         kyaku = r.get('脚質', '-')
+        if pd.isna(kyaku) or str(kyaku) in ["-", "nan", ""]:
+            fc = r.get('prev1_1c', np.nan)
+            if pd.notna(fc) and str(fc) not in ["-", "nan"]:
+                f_val = float(fc)
+                kyaku = "逃" if f_val <= 2.5 else "先" if f_val <= 4.5 else "差" if f_val <= 7.5 else "追"
+            else:
+                kyaku = "-"
+
         k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
 
-        jockey_name = str(r.get('騎手', r.get('jockey_name', r.get('騎手_clean', '-')))).strip()
+        jockey_name = str(r.get('騎手', r.get('騎手_clean', '-'))).strip()
         j_win = float(r.get('jockey_win_rate', 0.0)) * 100
         jockey_str = f"{jockey_name}<br><span style='font-size:0.8em; color:#666;'>({j_win:.1f}%)</span>"
         
-        pop_val = r.get('人気', r.get('popularity', '-'))
-        odds_val = r.get('オッズ', r.get('odds', '-'))
+        pop_val = r.get('人気', '-')
+        odds_val = r.get('オッズ', '-')
         try:
             pop_str = f"<b>{int(float(pop_val))}</b>人気<br><span style='font-size:0.8em; color:#666;'>({float(odds_val):.1f}倍)</span>"
-        except:
-            pop_str = "<span style='color:#ccc;'>-</span>"
+        except: pop_str = "<span style='color:#ccc;'>-</span>"
 
-        t_idx_val = r.get('eff_my_time_idx', r.get('prev_my_time_idx', np.nan))
-        s_idx_val = r.get('eff_my_start_idx', r.get('custom_start_index', np.nan))
+        # 🚨 限界突破版の列名に変更 (ema3_custom_time_index_m / ema3_custom_start_index)
+        t_idx_val = r.get('ema3_custom_time_index_m', r.get('prev1_time_idx', np.nan))
+        s_idx_val = r.get('ema3_custom_start_index', r.get('prev1_start_idx', np.nan))
         
         is_missing = False
         try:
             t_f, s_f = float(t_idx_val), float(s_idx_val)
-            if pd.isna(t_f) or pd.isna(s_f) or t_f == 0.0:
-                is_missing = True
-        except:
-            is_missing = True
+            if pd.isna(t_f) or pd.isna(s_f) or t_f == 0.0: is_missing = True
+        except: is_missing = True
 
         if is_missing:
             idx_str = "<span class='missing-data'>データ無</span>"
@@ -169,20 +167,23 @@ def generate_beautiful_table(disp_df):
         if not is_missing and t_idx >= 105: notes.append("<span class='note-icon'>⚡</span>時計上位")
         
         track_bonus = float(r.get('track_bonus', 0.0))
-        if track_bonus > 0:
-            notes.append(f"<span class='track-bias-badge'>☔ 重適性 +{track_bonus:.1f}</span>")
-        elif track_bonus < 0:
-            notes.append(f"<span class='track-bias-badge' style='background:#95a5a6;'>☀ 良適性</span>")
-
+        if track_bonus > 0: notes.append(f"<span class='track-bias-badge'>☔ 重適性 +{track_bonus:.1f}</span>")
+        elif track_bonus < 0: notes.append(f"<span class='track-bias-badge' style='background:#95a5a6;'>☀ 良適性</span>")
         note_str = "<br>".join(notes) if notes else "<span style='color:#ccc;'>-</span>"
         
-        u_num_val = r.get('馬番_num', r.get('馬番', r.get('gate_num', 0)))
-        u_num = int(float(u_num_val)) if pd.notna(u_num_val) else 0
-        h_name = str(r.get('馬名', r.get('馬名_clean', '-'))).strip()
+        u_num_val = r.get('馬番', 0)
+        u_num = int(float(u_num_val)) if pd.notna(u_num_val) and str(u_num_val).lower() != 'nan' else 0
+        h_name = str(r.get('馬名', '-')).strip()
         
         raw_score = r.get('score_disp', '-')
-        score_str = f"<b>{raw_score}</b>" if raw_score != "-" else "-"
-        rentai = int(float(r.get('jockey_rentai_rate', 0.0)) * 100) if pd.notna(r.get('jockey_rentai_rate', 0.0)) else 0
+        score_str = f"<b>{raw_score}</b>" if (pd.notna(raw_score) and str(raw_score) != '-') else "-"
+        
+        # 🚨 連対率がない場合は、勝率（jockey_win_rate）を約1.8倍して概算表示
+        rentai_raw = r.get('jockey_rentai_rate', np.nan)
+        if pd.notna(rentai_raw) and str(rentai_raw).lower() != 'nan':
+            rentai = int(float(rentai_raw) * 100)
+        else:
+            rentai = int(j_win * 1.8)
 
         html += f"""<tr>
 <td style='font-weight:bold; color:#c94a65 !important;'>{u_num:02d}</td>
@@ -229,25 +230,25 @@ if st.session_state['selected_race_id']:
     st.markdown("---")
     
     if target_id not in cache_data:
-        st.error(f"⚠️ このレース（{target_id}）の予測キャッシュが見つかりません。`update_all.py` を実行してキャッシュを更新してください。")
+        st.error(f"⚠️ このレース（{target_id}）の予測キャッシュが見つかりません。")
     else:
         scored_df = pd.DataFrame(cache_data[target_id])
         
-        # ☔ 動的馬場バイアス補正
         scored_df['track_bonus'] = 0.0
         if track_condition in ["重", "不良"]:
-            if 'heavy_track_place_rate' in scored_df.columns:
-                rate = pd.to_numeric(scored_df['heavy_track_place_rate'], errors='coerce').fillna(0.0)
-                scored_df['track_bonus'] = (rate * 5.0).clip(0, 5)
+            rate_col = 'track_win_rate' if 'track_win_rate' in scored_df.columns else None
+            if rate_col:
+                rate = pd.to_numeric(scored_df[rate_col], errors='coerce').fillna(0.0)
+                scored_df['track_bonus'] = (rate * 10.0).clip(0, 5) # 勝率ベースで重適性ボーナスを加点
             else:
                 kyaku_types = scored_df.get('脚質', pd.Series([''] * len(scored_df)))
                 scored_df.loc[kyaku_types.isin(['逃', '先']), 'track_bonus'] = 1.5
         elif track_condition == "良":
-            if 'heavy_track_place_rate' in scored_df.columns:
-                rate = pd.to_numeric(scored_df['heavy_track_place_rate'], errors='coerce').fillna(0.0)
-                scored_df['track_bonus'] = (rate * -2.0).clip(-2, 0)
+            rate_col = 'track_win_rate' if 'track_win_rate' in scored_df.columns else None
+            if rate_col:
+                rate = pd.to_numeric(scored_df[rate_col], errors='coerce').fillna(0.0)
+                scored_df['track_bonus'] = (rate * -4.0).clip(-2, 0)
         
-        # スコア補正と再ソート
         if 'score_disp' in scored_df.columns:
             valid_scores = pd.to_numeric(scored_df['score_disp'], errors='coerce')
             scored_df['score_disp_base'] = valid_scores
@@ -265,12 +266,12 @@ if st.session_state['selected_race_id']:
         st.markdown(f"<h2>🚀 {race_display_name}</h2>", unsafe_allow_html=True)
 
         front_runners_count = len(scored_df[scored_df.get('脚質', '') == '逃']) + len(scored_df[scored_df.get('脚質', '') == '先'])
-        pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 4 else 'ペースは落ち着きそうです。前残り注意。'}"
+        pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！' if front_runners_count >= 4 else 'ペースは落ち着きそうです。前残り注意。'}"
 
         def get_u_num(df, index):
             if len(df) > index:
-                val = df.iloc[index].get('馬番_num', df.iloc[index].get('馬番', df.iloc[index].get('gate_num', 0)))
-                return int(float(val)) if pd.notna(val) else 0
+                val = df.iloc[index].get('馬番', 0)
+                return int(float(val)) if pd.notna(val) and str(val).lower() != 'nan' else 0
             return 0
 
         u_1 = get_u_num(scored_df, 0)
@@ -283,8 +284,7 @@ if st.session_state['selected_race_id']:
             s1 = float(scored_df.iloc[0].get('score_disp_base'))
             s2 = float(scored_df.iloc[1].get('score_disp_base'))
             score_diff = s1 - s2
-        else:
-            score_diff = 0
+        else: score_diff = 0
 
         if score_diff >= 4:
             rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
@@ -303,7 +303,7 @@ if st.session_state['selected_race_id']:
             <span style='font-size:0.85em; font-weight:normal;'>
             * <b>軸馬(1頭):</b> <b>{axis_horse}</b><br>
             * <b>相手(ヒモ):</b> {target_horses}<br>
-            * <b>理由:</b> 🤖 <b>LambdaMARTの絶対偏差値</b>に基づく選定です。{rec_text}{pace_text}
+            * <b>理由:</b> 🤖 <b>AI偏差値</b>に基づく選定です。{rec_text}{pace_text}
             </span>
         </div>
         """, unsafe_allow_html=True)
@@ -314,7 +314,7 @@ if st.session_state['selected_race_id']:
         if target_id in st.session_state['gemini_results']:
             saved_marks = st.session_state['gemini_results'][target_id].get('marks', {})
             for h_num, g_mark in saved_marks.items():
-                scored_df.loc[pd.to_numeric(scored_df.get('馬番_num', scored_df.get('馬番', scored_df.get('gate_num'))), errors='coerce') == float(h_num), 'gemini_mark'] = g_mark
+                scored_df.loc[pd.to_numeric(scored_df.get('馬番'), errors='coerce') == float(h_num), 'gemini_mark'] = g_mark
 
         table_placeholder = st.empty()
         table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
@@ -326,39 +326,33 @@ if st.session_state['selected_race_id']:
 
             table_summary = []
             neutral_df = scored_df.copy()
-            neutral_df['u_num_temp'] = pd.to_numeric(neutral_df.get('馬番_num', neutral_df.get('馬番', neutral_df.get('gate_num', 0))), errors='coerce').fillna(99).astype(int)
+            neutral_df['u_num_temp'] = pd.to_numeric(neutral_df.get('馬番'), errors='coerce').fillna(99).astype(int)
             neutral_df = neutral_df.sort_values('u_num_temp')
 
             for idx, row in neutral_df.iterrows():
                 u_n = row['u_num_temp']
                 if u_n == 99: continue
                 
-                odds = row.get('オッズ', row.get('odds', '不明'))
-                pop = row.get('人気', row.get('popularity', '不明'))
+                odds = row.get('オッズ', '不明')
+                pop = row.get('人気', '不明')
                 ai_score = row.get('score_disp', '-')
                 
-                table_summary.append(
-                    f"馬番:{u_n:02d} | 馬名:{row.get('馬名', row.get('馬名_clean', ''))} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', row.get('騎手_clean', ''))} | AI偏差値(馬場補正込):{ai_score} | 人気/オッズ:{pop}人気({odds}倍)"
-                )
+                table_summary.append(f"馬番:{u_n:02d} | 馬名:{row.get('馬名', '')} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', '')} | AI偏差値(馬場補正込):{ai_score} | 人気/オッズ:{pop}人気({odds}倍)")
 
             race_distance = info.get('distance', '不明')
-            
-            sys_inst = f"""あなたは地方競馬の事情通であり、AIデータと競馬のセオリーを融合させる天才予想家「勝ち子ちゃん（Gemini）」です。
-当日の設定馬場は【{track_condition}】です。
-AI偏差値、脚質、馬場状態【{track_condition}】を加味して最終印（◎, ◯, ▲, △, ☆）を打ってください。
-
+            sys_inst = f"""地方競馬予想家「勝ち子ちゃん」として馬場状態【{track_condition}】を加味して印（◎, ◯, ▲, △, ☆）を出力してください。
 ◎ [馬番] 馬名 （理由）
 ◯ [馬番] 馬名 （理由）
 ▲ [馬番] 馬名 （理由）
 △ [馬番] 馬名 （理由）
-☆ [馬番] 馬名 （理由）
-"""
+☆ [馬番] 馬名 （理由）"""
+            
             with st.spinner("🎀 Geminiが思考中..."):
                 try:
                     client = genai.Client(api_key=api_key_input)
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
-                        contents=f"対象レース: {race_display_name} (距離: {race_distance}m)\n\n対象馬データ:\n" + "\n".join(table_summary),
+                        contents=f"対象レース: {race_display_name}\n\n対象馬データ:\n" + "\n".join(table_summary),
                         config=types.GenerateContentConfig(system_instruction=sys_inst, temperature=0.7) 
                     )
                     resp_text = response.text
@@ -367,21 +361,13 @@ AI偏差値、脚質、馬場状態【{track_condition}】を加味して最終�
                     for line in resp_text.split('\n'):
                         match = re.search(r'([◎◯▲△☆]).*?\[(\d{1,2})\]', line)
                         if match:
-                            mark = match.group(1)
-                            horse_num = int(match.group(2))
-                            new_marks[horse_num] = mark
+                            new_marks[int(match.group(2))] = match.group(1)
                             
-                    st.session_state['gemini_results'][target_id] = {
-                        'marks': new_marks,
-                        'text': resp_text
-                    }
-                    
+                    st.session_state['gemini_results'][target_id] = {'marks': new_marks, 'text': resp_text}
                     for h_num, g_mark in new_marks.items():
-                        scored_df.loc[pd.to_numeric(scored_df.get('馬番_num', scored_df.get('馬番', scored_df.get('gate_num'))), errors='coerce') == float(h_num), 'gemini_mark'] = g_mark
+                        scored_df.loc[pd.to_numeric(scored_df.get('馬番'), errors='coerce') == float(h_num), 'gemini_mark'] = g_mark
                     table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
-                    
                 except Exception as e: st.error(f"エラー: {e}")
 
         if target_id in st.session_state['gemini_results']:
-            clean_text_disp = re.sub(r'^[#\-\s]+', '', st.session_state['gemini_results'][target_id]['text'].strip())
-            st.markdown(f"<div class='gemini-output-box'>{clean_text_disp}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='gemini-output-box'>{st.session_state['gemini_results'][target_id]['text']}</div>", unsafe_allow_html=True)
