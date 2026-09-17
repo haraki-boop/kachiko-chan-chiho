@@ -12,7 +12,7 @@ from google.genai import types
 # ==========================================
 # 🎨 アプリの基本設定 & スタイル定義
 # ==========================================
-st.set_page_config(page_title="AI予想 勝ち子ちゃん | キャッシュ表示版", page_icon="🌸", layout="wide")
+st.set_page_config(page_title="AI予想 勝ち子ちゃん | 馬場補正・超高速版", page_icon="🌸", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,12 +43,13 @@ st.markdown("""
     .gemini-output-box { background-color: #ffffff !important; color: #222222 !important; padding: 20px; border-radius: 12px; border: 2px solid #f2cdd5; margin-top: 15px; }
     .note-icon { font-size: 1.1em; margin-right: 3px; }
     .missing-data { font-size: 0.85em; color: #999; background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+    .track-bias-badge { background: #3498db; color: #fff; padding: 3px 6px; border-radius: 6px; font-size: 0.8em; font-weight: bold; margin-top: 2px; display: inline-block; }
 </style>
 """, unsafe_allow_html=True)
 
 col1, col2 = st.columns([0.4, 10])
 with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (APIキャッシュ超高速版)")
+with col2: st.title("AI予想 勝ち子ちゃん (馬場補正搭載版)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'gemini_results' not in st.session_state: st.session_state['gemini_results'] = {}
@@ -79,16 +80,30 @@ def load_future_data():
 @st.cache_resource
 def load_cache():
     if os.path.exists(CACHE_FILE):
-        return joblib.load(CACHE_FILE)
+        try:
+            return joblib.load(CACHE_FILE)
+        except Exception as e:
+            st.error(f"⚠️ キャッシュ読み込みエラー: {e}")
+            return {}
     else:
-        st.error(f"⚠️ エラー: キャッシュファイル '{CACHE_FILE}' が見つかりません。")
+        st.error(f"⚠️ キャッシュファイル '{CACHE_FILE}' が見つかりません。")
         return {}
 
 df_future = load_future_data()
 cache_data = load_cache()
 
-st.sidebar.header("🔄 画面の更新")
+# ⚙️ サイドバー：設定および手動馬場状態の選択
+st.sidebar.header("⚙️ 当日の状況・設定")
 api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("☔ 当日の馬場状態選択")
+track_condition = st.sidebar.radio(
+    "馬場状態を指定してください",
+    options=["良", "稍重", "重", "不良"],
+    index=0
+)
+
 if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_container_width=True): 
     st.cache_data.clear()
     st.cache_resource.clear()
@@ -104,7 +119,7 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>特注 / 馬場補正</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     for i, r in disp_df.iterrows():
         ai_mark = get_mark(i)
@@ -131,20 +146,20 @@ def generate_beautiful_table(disp_df):
         except:
             pop_str = "<span style='color:#ccc;'>-</span>"
 
-        t_idx_val = r.get('eff_my_time_idx', r.get('prev_my_time_idx', 100))
-        s_idx_val = r.get('eff_my_start_idx', r.get('custom_start_index', 50))
+        t_idx_val = r.get('eff_my_time_idx', r.get('prev_my_time_idx', np.nan))
+        s_idx_val = r.get('eff_my_start_idx', r.get('custom_start_index', np.nan))
         
         is_missing = False
         try:
             t_f, s_f = float(t_idx_val), float(s_idx_val)
-            if pd.isna(t_f) or pd.isna(s_f) or (t_f == 40.0 and s_f == 50.0) or (t_f == 0.0 and s_f == 0.0) or (t_f == 100.0 and s_f == 50.0):
+            if pd.isna(t_f) or pd.isna(s_f) or t_f == 0.0:
                 is_missing = True
         except:
             is_missing = True
 
         if is_missing:
             idx_str = "<span class='missing-data'>データ無</span>"
-            t_idx = 40
+            t_idx = 0
         else:
             t_idx = int(t_f)
             s_idx = int(s_f)
@@ -152,12 +167,21 @@ def generate_beautiful_table(disp_df):
 
         notes = []
         if not is_missing and t_idx >= 105: notes.append("<span class='note-icon'>⚡</span>時計上位")
+        
+        track_bonus = float(r.get('track_bonus', 0.0))
+        if track_bonus > 0:
+            notes.append(f"<span class='track-bias-badge'>☔ 重適性 +{track_bonus:.1f}</span>")
+        elif track_bonus < 0:
+            notes.append(f"<span class='track-bias-badge' style='background:#95a5a6;'>☀ 良適性</span>")
+
         note_str = "<br>".join(notes) if notes else "<span style='color:#ccc;'>-</span>"
         
         u_num_val = r.get('馬番_num', r.get('馬番', r.get('gate_num', 0)))
         u_num = int(float(u_num_val)) if pd.notna(u_num_val) else 0
         h_name = str(r.get('馬名', r.get('馬名_clean', '-'))).strip()
-        score = int(float(r.get('score_disp', 50))) if pd.notna(r.get('score_disp', 50)) else 50
+        
+        raw_score = r.get('score_disp', '-')
+        score_str = f"<b>{raw_score}</b>" if raw_score != "-" else "-"
         rentai = int(float(r.get('jockey_rentai_rate', 0.0)) * 100) if pd.notna(r.get('jockey_rentai_rate', 0.0)) else 0
 
         html += f"""<tr>
@@ -169,7 +193,7 @@ def generate_beautiful_table(disp_df):
 <td>{pop_str}</td>
 <td style='color:#5a3d46 !important;'><b>{rentai}%</b></td>
 <td>{idx_str}</td>
-<td style='color:#5a3d46 !important; font-size:1.1em;'><b>{score}</b></td>
+<td style='color:#5a3d46 !important; font-size:1.1em;'>{score_str}</td>
 <td><span class='badge-mark {b_cls_ai}'>{ai_mark}</span></td>
 <td>{gem_str}</td>
 </tr>"""
@@ -205,30 +229,40 @@ if st.session_state['selected_race_id']:
     st.markdown("---")
     
     if target_id not in cache_data:
-        st.error(f"⚠️ このレース（{target_id}）の予測キャッシュが見つかりません。")
+        st.error(f"⚠️ このレース（{target_id}）の予測キャッシュが見つかりません。`update_all.py` を実行してキャッシュを更新してください。")
     else:
         scored_df = pd.DataFrame(cache_data[target_id])
         
+        # ☔ 動的馬場バイアス補正
+        scored_df['track_bonus'] = 0.0
+        if track_condition in ["重", "不良"]:
+            if 'heavy_track_place_rate' in scored_df.columns:
+                rate = pd.to_numeric(scored_df['heavy_track_place_rate'], errors='coerce').fillna(0.0)
+                scored_df['track_bonus'] = (rate * 5.0).clip(0, 5)
+            else:
+                kyaku_types = scored_df.get('脚質', pd.Series([''] * len(scored_df)))
+                scored_df.loc[kyaku_types.isin(['逃', '先']), 'track_bonus'] = 1.5
+        elif track_condition == "良":
+            if 'heavy_track_place_rate' in scored_df.columns:
+                rate = pd.to_numeric(scored_df['heavy_track_place_rate'], errors='coerce').fillna(0.0)
+                scored_df['track_bonus'] = (rate * -2.0).clip(-2, 0)
+        
+        # スコア補正と再ソート
         if 'score_disp' in scored_df.columns:
-            scored_df['score_disp'] = pd.to_numeric(scored_df['score_disp'], errors='coerce').fillna(50)
-            scored_df = scored_df.sort_values(by='score_disp', ascending=False).reset_index(drop=True)
+            valid_scores = pd.to_numeric(scored_df['score_disp'], errors='coerce')
+            scored_df['score_disp_base'] = valid_scores
+            scored_df['score_disp'] = np.where(
+                valid_scores.notna(),
+                (valid_scores + scored_df['track_bonus']).round(1),
+                "-"
+            )
+            scored_df = scored_df.sort_values(
+                by=['score_disp_base'], ascending=False, na_position='last'
+            ).reset_index(drop=True)
         
         info = df_future[df_future['race_id'].astype(str) == target_id].iloc[0] if not df_future.empty else {'place_name': '地方', 'r_num': '?', 'race_name': ''}
-        race_display_name = f"{info['place_name']} {info['r_num']}R 【{info.get('race_name', '')}】"
+        race_display_name = f"{info['place_name']} {info['r_num']}R 【{info.get('race_name', '')}】 (指定馬場: {track_condition})"
         st.markdown(f"<h2>🚀 {race_display_name}</h2>", unsafe_allow_html=True)
-        
-        missing_count = 0
-        for _, row_data in scored_df.iterrows():
-            try:
-                t = float(row_data.get('eff_my_time_idx', row_data.get('prev_my_time_idx', 40)))
-                s = float(row_data.get('eff_my_start_idx', row_data.get('custom_start_index', 50)))
-                if (t == 40.0 and s == 50.0) or pd.isna(t) or t == 0.0 or (t == 100.0 and s == 50.0):
-                    missing_count += 1
-            except:
-                missing_count += 1
-        
-        if missing_count >= 3:
-            st.warning(f"⚠️ **【見送り推奨】** このレースは過去データがない（初出走・転入など）、またはデータが正常に取得できていない馬が **{missing_count}頭** 含まれています。AI予想のブレが大きくなるため、勝負を避けることを強くおすすめします。")
 
         front_runners_count = len(scored_df[scored_df.get('脚質', '') == '逃']) + len(scored_df[scored_df.get('脚質', '') == '先'])
         pace_text = f"<br>🔥 <b>展開予想:</b> このレースは逃げ・先行馬が {front_runners_count} 頭います。{'ハイペース崩れに注意！差し馬の評価を上げています。' if front_runners_count >= 4 else 'ペースは落ち着きそうです。前残り注意。'}"
@@ -245,21 +279,21 @@ if st.session_state['selected_race_id']:
         u_4 = get_u_num(scored_df, 3)
         u_5 = get_u_num(scored_df, 4)
 
-        if len(scored_df) > 1:
-            s1 = float(scored_df.iloc[0].get('score_disp', 50))
-            s2 = float(scored_df.iloc[1].get('score_disp', 50))
+        if len(scored_df) > 1 and pd.notna(scored_df.iloc[0].get('score_disp_base')) and pd.notna(scored_df.iloc[1].get('score_disp_base')):
+            s1 = float(scored_df.iloc[0].get('score_disp_base'))
+            s2 = float(scored_df.iloc[1].get('score_disp_base'))
             score_diff = s1 - s2
         else:
             score_diff = 0
 
         if score_diff >= 4:
             rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
-            rec_text = f"1位の強さが抜けている（偏差値 {score_diff:.1f} 差）ため、迷わず頭固定の3連単で仕留めます。"
+            rec_text = f"1位の強さが抜けている（偏差値 {score_diff:.1f} 差）ため、頭固定の3連単で狙います。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}"
         else:
             rec_pattern_name = "🛡️ 【能力混戦・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
-            rec_text = f"上位陣が能力拮抗（偏差値 {score_diff:.1f} 差）しているため、1位を軸にしつつ相手を広く構えた3連複で狙います。"
+            rec_text = f"上位陣が能力拮抗（偏差値 {score_diff:.1f} 差）しているため、1位軸の3連複で広く狙います。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}"
 
@@ -269,12 +303,12 @@ if st.session_state['selected_race_id']:
             <span style='font-size:0.85em; font-weight:normal;'>
             * <b>軸馬(1頭):</b> <b>{axis_horse}</b><br>
             * <b>相手(ヒモ):</b> {target_horses}<br>
-            * <b>理由:</b> 🤖 <b>LambdaMARTが算出した純粋な絶対強さ(偏差値)</b>に基づく選定です。{rec_text}{pace_text}
+            * <b>理由:</b> 🤖 <b>LambdaMARTの絶対偏差値</b>に基づく選定です。{rec_text}{pace_text}
             </span>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAI評価 (📍 絶対能力・偏差値版)</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='section-header'>📊 勝ち子ちゃんのAI評価 (📍 指定馬場「{track_condition}」補正版)</div>", unsafe_allow_html=True)
 
         scored_df['gemini_mark'] = "-"
         if target_id in st.session_state['gemini_results']:
@@ -285,7 +319,7 @@ if st.session_state['selected_race_id']:
         table_placeholder = st.empty()
         table_placeholder.markdown(generate_beautiful_table(scored_df), unsafe_allow_html=True)
 
-        if st.button("🎀 Gemini独自の完全独立予想（世論・血統・直感重視）を生成", use_container_width=True):
+        if st.button("🎀 Gemini独自の完全独立予想を生成", use_container_width=True):
             if not api_key_input: 
                 st.error("【設定エラー】APIキーが見つかりません。")
                 st.stop()
@@ -301,41 +335,25 @@ if st.session_state['selected_race_id']:
                 
                 odds = row.get('オッズ', row.get('odds', '不明'))
                 pop = row.get('人気', row.get('popularity', '不明'))
-                bbs = str(row.get('世論コメント', row.get('bbs_comment', '特になし')))
-                
-                # 💡 ゴミコメント（空欄のデフォルトテキスト）を弾くフィルターを追加
-                if "コメントを投稿する" in bbs or "取得不可" in bbs:
-                    bbs = "特になし"
-                
-                # 💡 AI偏差値も一緒に渡すように追加
-                ai_score = row.get('score_disp', 50)
+                ai_score = row.get('score_disp', '-')
                 
                 table_summary.append(
-                    f"馬番:{u_n:02d} | 馬名:{row.get('馬名', row.get('馬名_clean', ''))} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', row.get('騎手_clean', ''))} | AI偏差値:{ai_score} | 人気/オッズ:{pop}人気({odds}倍) | ネットの評価:{bbs}"
+                    f"馬番:{u_n:02d} | 馬名:{row.get('馬名', row.get('馬名_clean', ''))} | 脚質:{row.get('脚質', '')} | 騎手:{row.get('騎手', row.get('騎手_clean', ''))} | AI偏差値(馬場補正込):{ai_score} | 人気/オッズ:{pop}人気({odds}倍)"
                 )
 
             race_distance = info.get('distance', '不明')
             
-            # 💡 完全に無視するのではなく「AI偏差値」をベースにしつつ、展開やオッズで予想させるプロンプトに変更
-            sys_inst = f"""あなたは地方競馬の事情通であり、AIのデータと競馬のセオリーを融合させて最終結論を出す天才予想家「勝ち子ちゃん（Gemini）」です。
-出走馬の基本データ、システムの算出した「AI偏差値」、そして「オッズ・世論」をお渡しします。
+            sys_inst = f"""あなたは地方競馬の事情通であり、AIデータと競馬のセオリーを融合させる天才予想家「勝ち子ちゃん（Gemini）」です。
+当日の設定馬場は【{track_condition}】です。
+AI偏差値、脚質、馬場状態【{track_condition}】を加味して最終印（◎, ◯, ▲, △, ☆）を打ってください。
 
-【🚨あなたの役割と絶対厳守のルール🚨】
-今回のあなたの予想では、システムの「AI偏差値（絶対能力）」をベースとして尊重しつつ、そこに「展開（脚質の偏り）」「オッズの歪み（妙味）」「騎手やコース適性」を掛け合わせて、最終的な印を打ってください。
-完全にAIを無視するのではなく、「AI評価が高いのに人気がないから美味しい」「AI評価は高いが、逃げ馬多数で展開が厳しそうだから対抗に下げる」といった、データとリアルを融合させた現実的なアプローチをしてください。
-※ネットの評価が「特になし」の場合は、無理に世論について言及する必要はありません。
-
-【回答の構成】
-🌸 Geminiの独自見解（ペース予想、AI偏差値とオッズのギャップ、狙い目など）
-🎯 Gemini独自の印と解説
-※【重要】システムが馬番を自動抽出するため、必ず以下のフォーマット通りに記述してください。馬番は必ず半角数字にし、[ ]で囲んでください。
 ◎ [馬番] 馬名 （理由）
 ◯ [馬番] 馬名 （理由）
 ▲ [馬番] 馬名 （理由）
 △ [馬番] 馬名 （理由）
 ☆ [馬番] 馬名 （理由）
 """
-            with st.spinner("🎀 Geminiがリアルタイムの世論とオッズを加味して思考中..."):
+            with st.spinner("🎀 Geminiが思考中..."):
                 try:
                     client = genai.Client(api_key=api_key_input)
                     response = client.models.generate_content(
@@ -365,5 +383,5 @@ if st.session_state['selected_race_id']:
                 except Exception as e: st.error(f"エラー: {e}")
 
         if target_id in st.session_state['gemini_results']:
-            clean_text = re.sub(r'^[#\-\s]+', '', st.session_state['gemini_results'][target_id]['text'].strip())
-            st.markdown(f"<div class='gemini-output-box'>{clean_text}</div>", unsafe_allow_html=True)
+            clean_text_disp = re.sub(r'^[#\-\s]+', '', st.session_state['gemini_results'][target_id]['text'].strip())
+            st.markdown(f"<div class='gemini-output-box'>{clean_text_disp}</div>", unsafe_allow_html=True)
