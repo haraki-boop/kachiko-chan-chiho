@@ -115,7 +115,7 @@ def generate_beautiful_table(disp_df, cond):
             gem_str = f"<span class='badge-mark {b_cls_gem}'>{gem_mark}</span>"
 
         kyaku = str(r.get('脚質', '-'))
-        k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;"
+        k_style = "background:#ff7675;" if kyaku == "逃" else "background:#e67e22;" if kyaku == "先" else "background:#3498db;" if kyaku == "差" else "background:#2ecc71;" if kyaku == "追" else "background:#ccc;"
 
         jockey_name = str(r.get('騎手', r.get('騎手_clean', '-'))).strip()
         j_win = float(r.get('jockey_win_rate', 0.0)) * 100 if str(r.get('jockey_win_rate', 0.0)) != '-' else 0.0
@@ -149,9 +149,15 @@ def generate_beautiful_table(disp_df, cond):
         except: u_num = 0
         h_name = str(r.get('馬名', '-')).strip()
         
-        raw_score = r.get(score_col, '-')
-        try: score_str = f"<b>{float(raw_score):.1f}</b>"
-        except: score_str = "-"
+        # NaN が "nan" 文字列として出力されるバグを完全ガード
+        raw_score = r.get(score_col, np.nan)
+        if pd.isna(raw_score) or str(raw_score).strip().lower() in ['nan', 'none', '-']:
+            score_str = "<span style='color:#ccc;'>-</span>"
+        else:
+            try:
+                score_str = f"<b>{float(raw_score):.1f}</b>"
+            except:
+                score_str = "<span style='color:#ccc;'>-</span>"
         
         rentai_raw = r.get('jockey_rentai_rate', np.nan)
         try: rentai = int(float(rentai_raw) * 100)
@@ -206,7 +212,6 @@ if st.session_state['selected_race_id']:
     else:
         scored_df = pd.DataFrame(cache_data[target_id])
         
-        # レース内のデータ未保持（新馬・転入初戦等）馬の頭数カウント
         if 'is_no_data_horse' in scored_df.columns:
             no_data_count = int(scored_df['is_no_data_horse'].sum())
         else:
@@ -218,7 +223,6 @@ if st.session_state['selected_race_id']:
         race_display_name = f"{info['place_name']} {info['r_num']}R (指定馬場: {track_condition})"
         st.markdown(f"<h2>🚀 {race_display_name}</h2>", unsafe_allow_html=True)
 
-        # 🚨 過去データがない馬が3頭以上存在する場合の見送り警告バナー表示
         if no_data_count >= 3:
             st.markdown(f"""
             <div class='warning-banner'>
