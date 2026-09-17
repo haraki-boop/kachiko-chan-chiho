@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import joblib
 import streamlit as st
-from datetime import datetime, timezone, timedelta
 from google import genai
 from google.genai import types
 
@@ -36,10 +35,6 @@ st.markdown("""
     .warning-banner { background: #e74c3c; color: #ffffff !important; padding: 16px 20px; border-radius: 10px; font-size: 1.1rem; font-weight: bold; margin-bottom: 20px; border: 2px solid #c0392b; }
 </style>
 """, unsafe_allow_html=True)
-
-col1, col2 = st.columns([0.4, 10])
-with col1: st.write("🌸")
-with col2: st.title("AI予想 勝ち子ちゃん (馬場適性フルオート版)")
 
 if 'selected_race_id' not in st.session_state: st.session_state['selected_race_id'] = None
 if 'gemini_results' not in st.session_state: st.session_state['gemini_results'] = {}
@@ -79,9 +74,6 @@ cache_data = load_cache()
 
 st.sidebar.header("⚙️ 当日の状況・設定")
 api_key_input = st.sidebar.text_input("Gemini API Key", value=GEMINI_API_KEY, type="password")
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("☔ 当日の馬場状態選択")
 track_condition = st.sidebar.radio("馬場状態を指定してください", options=["良", "稍重", "重", "不良"], index=0)
 
 if st.sidebar.button("🔄 キャッシュ完全クリア＆リロード", use_container_width=True): 
@@ -99,15 +91,25 @@ def get_mark(idx):
 
 def generate_beautiful_table(disp_df, cond):
     html = "<div class='table-container'><table class='kachi-table'>"
-    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬場適性補正</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI偏差値</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
+    html += "<thead><tr><th>馬番</th><th style='text-align:left;'>馬名</th><th>馬場適性補正</th><th>騎手(勝率)</th><th>脚質</th><th>人気(オッズ)</th><th>連対率</th><th>指数実績<br>(タイム/ダッシュ)</th><th>AI指数(100点満点)</th><th>AI印</th><th>Gemini印</th></tr></thead><tbody>"
     
     score_col = f'score_{cond}'
     bonus_col = f'track_bonus_{cond}'
 
     for i, r in disp_df.iterrows():
-        ai_mark = get_mark(i)
-        b_cls_ai = "badge-honmei" if "◎" in ai_mark else "badge-taikou" if "◯" in ai_mark else "badge-tana" if "▲" in ai_mark else "badge-renka" if "△" in ai_mark else "badge-tana" if "☆" in ai_mark else "badge-keshi"
+        raw_score = r.get(score_col, np.nan)
+        is_no_data = r.get('is_no_data_horse', False) or pd.isna(raw_score) or str(raw_score).strip().lower() in ['nan', 'none', '-']
         
+        # データ無しの馬は AI印を "-" に固定
+        if is_no_data:
+            ai_mark = "-"
+            b_cls_ai = ""
+            ai_mark_str = "<span style='color:#ccc; font-weight:bold;'>-</span>"
+        else:
+            ai_mark = get_mark(i)
+            b_cls_ai = "badge-honmei" if "◎" in ai_mark else "badge-taikou" if "◯" in ai_mark else "badge-tana" if "▲" in ai_mark else "badge-renka" if "△" in ai_mark else "badge-tana" if "☆" in ai_mark else "badge-keshi"
+            ai_mark_str = f"<span class='badge-mark {b_cls_ai}'>{ai_mark}</span>"
+
         gem_mark = r.get('gemini_mark', '-')
         if gem_mark == "-": gem_str = "<span style='color:#ccc; font-weight:bold;'>-</span>"
         else:
@@ -149,15 +151,11 @@ def generate_beautiful_table(disp_df, cond):
         except: u_num = 0
         h_name = str(r.get('馬名', '-')).strip()
         
-        # NaN が "nan" 文字列として出力されるバグを完全ガード
-        raw_score = r.get(score_col, np.nan)
-        if pd.isna(raw_score) or str(raw_score).strip().lower() in ['nan', 'none', '-']:
+        if is_no_data:
             score_str = "<span style='color:#ccc;'>-</span>"
         else:
-            try:
-                score_str = f"<b>{float(raw_score):.1f}</b>"
-            except:
-                score_str = "<span style='color:#ccc;'>-</span>"
+            try: score_str = f"<b>{float(raw_score):.1f}</b>"
+            except: score_str = "<span style='color:#ccc;'>-</span>"
         
         rentai_raw = r.get('jockey_rentai_rate', np.nan)
         try: rentai = int(float(rentai_raw) * 100)
@@ -173,7 +171,7 @@ def generate_beautiful_table(disp_df, cond):
 <td style='color:#5a3d46 !important;'><b>{rentai}%</b></td>
 <td>{idx_str}</td>
 <td style='color:#5a3d46 !important; font-size:1.1em;'>{score_str}</td>
-<td><span class='badge-mark {b_cls_ai}'>{ai_mark}</span></td>
+<td>{ai_mark_str}</td>
 <td>{gem_str}</td>
 </tr>"""
     html += "</tbody></table></div>"
@@ -250,19 +248,19 @@ if st.session_state['selected_race_id']:
         u_5 = get_u_num(scored_df, 4)
 
         try:
-            s1 = float(scored_df.iloc[0].get(target_score_col, 50))
-            s2 = float(scored_df.iloc[1].get(target_score_col, 50))
+            s1 = float(scored_df.iloc[0].get(target_score_col, 80))
+            s2 = float(scored_df.iloc[1].get(target_score_col, 80))
             score_diff = s1 - s2
         except: score_diff = 0
 
         if score_diff >= 4:
             rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
-            rec_text = f"1位の強さが抜けている（偏差値 {score_diff:.1f} 差）ため、頭固定の3連単で狙います。"
+            rec_text = f"1位の強さが抜けている（点数 {score_diff:.1f} 差）ため、頭固定の3連単で狙います。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}"
         else:
             rec_pattern_name = "🛡️ 【能力混戦・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
-            rec_text = f"上位陣が能力拮抗（偏差値 {score_diff:.1f} 差）しているため、1位軸の3連複で広く狙います。"
+            rec_text = f"上位陣が能力拮抗（点数 {score_diff:.1f} 差）しているため、1位軸の3連複で広く狙います。"
             axis_horse = f"{u_1:02d}"
             target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}"
 
@@ -272,7 +270,7 @@ if st.session_state['selected_race_id']:
             <span style='font-size:0.85em; font-weight:normal;'>
             * <b>軸馬(1頭):</b> <b>{axis_horse}</b><br>
             * <b>相手(ヒモ):</b> {target_horses}<br>
-            * <b>理由:</b> 🤖 <b>AI偏差値（{track_condition}馬場補正済）</b>に基づく選定です。{rec_text}
+            * <b>理由:</b> 🤖 <b>AI指数（{track_condition}馬場補正済）</b>に基づく選定です。{rec_text}
             </span>
         </div>
         """, unsafe_allow_html=True)
@@ -285,3 +283,49 @@ if st.session_state['selected_race_id']:
                 scored_df.loc[pd.to_numeric(scored_df.get('馬番'), errors='coerce') == float(h_num), 'gemini_mark'] = g_mark
 
         st.empty().markdown(generate_beautiful_table(scored_df, track_condition), unsafe_allow_html=True)
+
+        # Gemini 予想の動的生成機能
+        st.markdown("<div class='section-header'>🤖 Gemini AIによる展開・買い目見解分析</div>", unsafe_allow_html=True)
+        active_api_key = api_key_input or GEMINI_API_KEY
+        
+        if not active_api_key:
+            st.info("💡 サイドバーに Gemini API Key を入力すると、AI見解の自動生成機能が有効になります。")
+        else:
+            if st.button("✨ Gemini AIの見解を生成する", use_container_width=True, type="primary"):
+                with st.spinner("Geminiが展開と各馬の評価を詳細分析中..."):
+                    try:
+                        client = genai.Client(api_key=active_api_key)
+                        
+                        prompt = f"""あなたはプロの地方競馬予想家です。
+以下のレース出走データとAI指数（100点満点評価）を分析し、展開予想と推奨買い目をまとめてください。
+
+【レース情報】
+{race_display_name}
+
+【出走馬データ (上位順)】
+"""
+                        for idx, row in scored_df.iterrows():
+                            h_no = row.get('馬番', '-')
+                            h_nm = row.get('馬名', '-')
+                            k_style = row.get('脚質', '-')
+                            j_nm = row.get('騎手', '-')
+                            sc = row.get(target_score_col, 'データ無')
+                            prompt += f"- 馬番{h_no}: {h_nm} | 脚質:{k_style} | 騎手:{j_nm} | AI指数:{sc}\n"
+
+                        prompt += """
+【出力フォーマット】
+1. 展開予想 (ペース展開、ハナ主張馬、展開向く馬)
+2. 最終予想印 (◎, ◯, ▲, △, ☆) とそれぞれの選定理由
+3. 推奨買い目 (3連複 / 3連単)
+"""
+                        response = client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=prompt
+                        )
+                        st.session_state['gemini_results'][target_id] = {'text': response.text, 'marks': {}}
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Gemini API エラー: {e}")
+
+        if target_id in st.session_state['gemini_results']:
+            st.markdown(f"<div class='gemini-output-box'>{st.session_state['gemini_results'][target_id]['text']}</div>", unsafe_allow_html=True)
