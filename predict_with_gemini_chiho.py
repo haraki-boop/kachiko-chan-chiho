@@ -100,10 +100,7 @@ def generate_beautiful_table(disp_df, cond):
         raw_score = r.get(score_col, np.nan)
         is_no_data = r.get('is_no_data_horse', False) or pd.isna(raw_score) or str(raw_score).strip().lower() in ['nan', 'none', '-']
         
-        # データ無しの馬は AI印を "-" に固定
         if is_no_data:
-            ai_mark = "-"
-            b_cls_ai = ""
             ai_mark_str = "<span style='color:#ccc; font-weight:bold;'>-</span>"
         else:
             ai_mark = get_mark(i)
@@ -247,30 +244,37 @@ if st.session_state['selected_race_id']:
         u_4 = get_u_num(scored_df, 3)
         u_5 = get_u_num(scored_df, 4)
 
-        try:
-            s1 = float(scored_df.iloc[0].get(target_score_col, 80))
-            s2 = float(scored_df.iloc[1].get(target_score_col, 80))
-            score_diff = s1 - s2
-        except: score_diff = 0
+        # ---------------------------------------------------------
+        # ★ NDCG@5モデル最適化 買い目判定エンジン
+        # ---------------------------------------------------------
+        valid_scores = pd.to_numeric(scored_df[target_score_col], errors='coerce').dropna().values
+        
+        if len(valid_scores) >= 3:
+            s1, s2, s3 = valid_scores[0], valid_scores[1], valid_scores[2]
+            gap1_2 = s1 - s2
+            gap1_3 = s1 - s3
 
-        if score_diff >= 4:
-            rec_pattern_name = "🎯 【絶対能力上位・1着固定流し】 1位 ➔ 2〜4位 (計6点)"
-            rec_text = f"1位の強さが抜けている（点数 {score_diff:.1f} 差）ため、頭固定の3連単で狙います。"
-            axis_horse = f"{u_1:02d}"
-            target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}"
+            if gap1_2 >= 5.0 and gap1_3 >= 8.0:
+                # パターン1: 1位独走（1着固定流し）
+                rec_pattern_name = f"🎯 【絶対軸出現】 3連単 1着固定流し ({u_1:02d} ➔ {u_2:02d}, {u_3:02d}, {u_4:02d} / 計6点)"
+                rec_text = f"AI指数1位（{u_1:02d}番）が後続に {gap1_2:.1f}pt 差をつけ独走傾向。頭固定の3連単が最適です。"
+            elif gap1_2 < 3.0 and gap1_3 < 5.0:
+                # パターン2: 上位混戦（NDCG@5最適解: 5頭BOX）
+                rec_pattern_name = f"🛡️ 【上位混戦・NDCG@5カバー】 3連複 5頭BOX ({u_1:02d}, {u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d} / 計10点)"
+                rec_text = f"上位陣のAI指数が僅差（1〜3位差 {gap1_3:.1f}pt）。着順入れ替わりに強い5頭BOXでカバーします。"
+            else:
+                # パターン3: 軸堅実・相手展開（3連複 1頭軸流し）
+                rec_pattern_name = f"⚖️ 【軸堅実・相手展開】 3連複 1頭軸流し ({u_1:02d} 軸 ➔ {u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d} / 計6点)"
+                rec_text = f"軸馬（{u_1:02d}番）の軸信頼度が高く、ヒモ荒れに対応した3連複1頭軸で狙います。"
         else:
-            rec_pattern_name = "🛡️ 【能力混戦・1頭軸流し】 1位 ➔ 2〜5位 (計6点)"
-            rec_text = f"上位陣が能力拮抗（点数 {score_diff:.1f} 差）しているため、1位軸の3連複で広く狙います。"
-            axis_horse = f"{u_1:02d}"
-            target_horses = f"{u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d}"
+            rec_pattern_name = f"🛡️ 【データ不足混戦】 3連複 5頭BOX ({u_1:02d}, {u_2:02d}, {u_3:02d}, {u_4:02d}, {u_5:02d} / 計10点)"
+            rec_text = "出走頭数または有効データ数が少ないため、上位BOXでリスク分散します。"
 
         st.markdown(f"""
         <div class='rec-banner-formation'>
             {rec_pattern_name}<br>
             <span style='font-size:0.85em; font-weight:normal;'>
-            * <b>軸馬(1頭):</b> <b>{axis_horse}</b><br>
-            * <b>相手(ヒモ):</b> {target_horses}<br>
-            * <b>理由:</b> 🤖 <b>AI指数（{track_condition}馬場補正済）</b>に基づく選定です。{rec_text}
+            * <b>理由:</b> 🤖 <b>NDCG@5最適化エンジン（{track_condition}馬場補正済）</b>に基づく選定です。{rec_text}
             </span>
         </div>
         """, unsafe_allow_html=True)
@@ -284,7 +288,6 @@ if st.session_state['selected_race_id']:
 
         st.empty().markdown(generate_beautiful_table(scored_df, track_condition), unsafe_allow_html=True)
 
-        # Gemini 予想の動的生成機能
         st.markdown("<div class='section-header'>🤖 Gemini AIによる展開・買い目見解分析</div>", unsafe_allow_html=True)
         active_api_key = api_key_input or GEMINI_API_KEY
         
