@@ -4,16 +4,23 @@ import joblib
 import pandas as pd
 import numpy as np
 import unicodedata
+import warnings
+
+# PandasのPerformanceWarning（フラグメンテーション警告）を非表示にする
+warnings.simplefilter(action='ignore', category=pd.errors.PerformanceWarning)
 
 def log_header(title):
     print(f"\n==================================================")
     print(f" ⚙️  {title}")
     print(f"==================================================")
 
+# 🌟 名寄せ完全化：学習時（create_rich_features.py）と完全に同一の仕様
 def clean_horse_name(name_val): 
     if pd.isna(name_val) or str(name_val).strip().lower() in ['nan', 'none', '']: return ""
     s = unicodedata.normalize('NFKC', str(name_val))
-    s = re.sub(r'\(.*?\)|\[.*?\]|（.*?）|［.*?］', '', s)
+    # カッコ書きの記号を除去
+    s = re.sub(r'\(.*?\)|\[.*?\]|（.*?）|［.*?］|【.*?】', '', s)
+    # 🚨 学習時と同じく「伸ばし棒（ー）」「空白」「中黒」などを完全に削除する
     return re.sub(r'[\s・･.\-ー_]+', '', s).strip().upper()
 
 def get_kyakushitsu(row): 
@@ -42,22 +49,26 @@ def calc_track_bias(place_code, track_cond, kyaku):
     if kyaku == "-": return 0.0
     bonus = 0.0
     is_wet = track_cond in ['重', '不良']
-    if is_wet and kyaku == '逃': bonus += 2.0
-    elif is_wet and kyaku == '先': bonus += 1.0
-    if track_cond == '稍重' and kyaku in ['逃', '先']: bonus += 0.5
 
-    if place_code == '44': 
-        if is_wet and kyaku == '逃': bonus += 1.5
-        elif track_cond == '良' and kyaku == '差': bonus += 0.5
-    elif place_code == '54':
-        if is_wet:
-            if kyaku in ['差', '追']: bonus += 2.0
-            elif kyaku == '逃': bonus -= 1.0
-    elif place_code in ['42', '45']:
+    if is_wet:
+        if kyaku == '逃': bonus += 4.0      
+        elif kyaku == '先': bonus += 2.5    
+    elif track_cond == '稍重':
+        if kyaku == '逃': bonus += 1.5
+        elif kyaku == '先': bonus += 1.0
+
+    if place_code in ['42', '45', '47', '48', '50']: 
         if is_wet and kyaku == '逃': bonus += 2.0
         elif is_wet and kyaku == '先': bonus += 1.0
-    elif place_code == '30':
+    elif place_code == '44': 
+        if is_wet and kyaku == '逃': bonus += 1.5
+        elif is_wet and kyaku == '先': bonus += 1.0
+    elif place_code == '30': 
         if is_wet and kyaku in ['逃', '先']: bonus += 1.5
+    elif place_code == '54': 
+        if is_wet and kyaku == '逃': bonus += 1.5
+        elif is_wet and kyaku == '先': bonus += 1.0
+
     return round(bonus, 1)
 
 def main():
@@ -66,7 +77,14 @@ def main():
         df_future = pd.read_csv("future_races_chiho.csv", encoding='utf-8-sig')
         df_past = pd.read_csv("ml_target_data_chiho.csv", encoding='utf-8-sig')
         model_data = joblib.load("keiba_ai_model_nar_ensemble.pkl")
-        loaded_dicts = joblib.load("past_dicts.pkl")
+        
+        # 過去の辞書ファイルがない場合でもエラーで止めず空辞書を使う安全装置
+        try:
+            loaded_dicts = joblib.load("past_dicts.pkl")
+        except FileNotFoundError:
+            loaded_dicts = {'jockey_dict': {}, 'jockey_rentai_dict': {}}
+            print("  [INFO] 'past_dicts.pkl' が見つからないため、デフォルト値を使用します。")
+            
         print(f"  [SUCCESS] 出走予定データ : {len(df_future)} 件 (全 {df_future['race_id'].nunique()} レース)")
         print(f"  [SUCCESS] 過去実績DBデータ : {len(df_past)} 件")
     except Exception as e:
@@ -74,12 +92,10 @@ def main():
         sys.exit(1)
 
     features = model_data['features']
-    jockey_dict = loaded_dicts['jockey_dict']
-    jockey_rentai_dict = loaded_dicts['jockey_rentai_dict']
+    jockey_dict = loaded_dicts.get('jockey_dict', {})
+    jockey_rentai_dict = loaded_dicts.get('jockey_rentai_dict', {})
 
     log_header("2. 安全な列選別マージ (当日の出走表データマスター化)")
-    
-    # 馬名・騎手・レースIDの整形
     horse_col_f = '馬名' if '馬名' in df_future.columns else df_future.columns[0]
     df_future['馬名_clean'] = df_future[horse_col_f].astype(str).apply(clean_horse_name)
     df_future['race_id_clean'] = df_future['race_id'].astype(str)
@@ -88,12 +104,10 @@ def main():
     jockey_col_f = '騎手' if '騎手' in df_future.columns else 'jockey'
     df_future['騎手_clean'] = df_future[jockey_col_f].astype(str).apply(clean_horse_name)
 
-    # 過去データから「馬の過去実績指標」のみを厳選抽出（当日情報との衝突を完全遮断）
     horse_col_p = '馬名_clean' if '馬名_clean' in df_past.columns else '馬名'
     df_past['馬名_clean'] = df_past[horse_col_p].astype(str).apply(clean_horse_name)
     df_past_latest = df_past.groupby('馬名_clean').last().reset_index()
 
-    # 当日データと重複するカラム、および過去のレース内相対計算カラム（_race_zscore等）を除外
     exclude_keywords = ['_race_diff', '_race_zscore', '_race_rank', 'race_id', '枠番', '馬番', '斤量', '騎手', 'オッズ', '人気', '着順', 'target_win', 'target_place']
     past_keep_cols = ['馬名_clean']
     for c in df_past_latest.columns:
@@ -103,16 +117,11 @@ def main():
     df_past_clean = df_past_latest[past_keep_cols].copy()
     df_past_clean['_merged_from_past'] = True
 
-    # 主軸(df_future)に過去実績プロファイルのみを left join
     df_calc = pd.merge(df_future, df_past_clean, on='馬名_clean', how='left')
     df_calc['_merged_from_past'] = df_calc['_merged_from_past'].fillna(False).astype(bool)
 
-    # 過去DB不在、またはタイム指数未保有の馬を「データ無馬」としてフラグ化
-    if 'ema3_custom_time_index_m' in df_calc.columns:
-        has_valid_idx = df_calc['ema3_custom_time_index_m'].notna() & (pd.to_numeric(df_calc['ema3_custom_time_index_m'], errors='coerce') > 0)
-        df_calc['is_no_data_horse'] = (~df_calc['_merged_from_past']) | (~has_valid_idx)
-    else:
-        df_calc['is_no_data_horse'] = ~df_calc['_merged_from_past']
+    # 🌟 余計な判定を削ぎ落とし、過去DBに紐づいているかだけを判定
+    df_calc['is_no_data_horse'] = ~df_calc['_merged_from_past']
 
     matched_count = int((~df_calc['is_no_data_horse']).sum())
     no_data_count = int(df_calc['is_no_data_horse'].sum())
@@ -125,10 +134,10 @@ def main():
 
     target_name_col = horse_col_f if horse_col_f in df_calc.columns else '馬名_clean'
     unmatched_names = df_calc.loc[df_calc['is_no_data_horse'], target_name_col].unique().tolist()
-    print(f"\n  🔍 【データ無（評価対象外）馬一覧】 (全 {len(unmatched_names)} 頭)")
-    print(f"  {unmatched_names}\n")
+    if len(unmatched_names) > 0:
+        print(f"\n  🔍 【データ無（初出走など）馬一覧】 (全 {len(unmatched_names)} 頭)")
+        print(f"  {unmatched_names}\n")
 
-    # 騎手勝率等の補填
     df_calc['jockey_win_rate'] = df_calc['騎手_clean'].map(jockey_dict).fillna(0.05)
     df_calc['jockey_rentai_rate'] = df_calc['騎手_clean'].map(jockey_rentai_dict).fillna(0.10)
 
@@ -141,8 +150,6 @@ def main():
     df_calc['脚質'] = pd.Series(None, index=df_calc.index, dtype=object)
 
     log_header("3. 当日レースメンバー内での相対評価再計算 & AI推論")
-    
-    # 当日のレース出走馬の中だけで相対値（_race_diff, _race_zscore）を再計算
     relative_bases = {f[:-10] for f in features if f.endswith('_race_diff')} | \
                      {f[:-12] for f in features if f.endswith('_race_zscore')} | \
                      {f[:-10] for f in features if f.endswith('_race_rank')}
@@ -159,7 +166,6 @@ def main():
 
         valid_data_mask = mask & (~df_calc['is_no_data_horse'])
         
-        # 有効データ保持馬のみで平均・標準偏差を算出し、相対化
         for base_col in relative_bases:
             if base_col in df_calc.columns:
                 vals = pd.to_numeric(df_calc.loc[valid_data_mask, base_col], errors='coerce')
@@ -172,7 +178,6 @@ def main():
                 df_calc.loc[mask, f'{base_col}_race_zscore'] = diff / std_v
                 df_calc.loc[mask, f'{base_col}_race_rank'] = pd.to_numeric(df_calc.loc[mask, base_col], errors='coerce').rank(ascending=False, method='min', na_option='bottom')
 
-        # AI推論の実行
         valid_indices = df_calc[valid_data_mask].index
         if len(valid_indices) > 0:
             X_pred = df_calc.loc[valid_indices, features].copy()
@@ -193,7 +198,6 @@ def main():
                 max_score = np.nanmax(raw_scores)
                 min_score = np.nanmin(raw_scores)
                 
-                # 60点〜100点スケールにスケーリング
                 if max_score == min_score or pd.isna(max_score):
                     scores_100 = np.full_like(raw_scores, 80.0)
                 else:
@@ -202,11 +206,9 @@ def main():
                 df_calc.loc[valid_indices, 'rank_score_raw'] = raw_scores
                 df_calc.loc[valid_indices, 'score_disp_base'] = scores_100
 
-        # 脚質判定
         for idx in df_calc[mask].index:
             df_calc.loc[idx, '脚質'] = get_kyakushitsu(df_calc.loc[idx])
 
-        # 馬場条件別の最終点数算出（最高100点）
         for cond in ['良', '稍重', '重', '不良']:
             bonus_col = f'track_bonus_{cond}'
             score_col = f'score_{cond}'
@@ -231,7 +233,6 @@ def main():
     cache_data = {}
     for rid in df_calc['race_id_clean'].unique():
         race_final = df_calc[df_calc['race_id_clean'] == rid].copy()
-        # raw_score の降順で確実にソートして並べる
         race_final['sort_key'] = pd.to_numeric(race_final['rank_score_raw']).fillna(-999)
         race_final = race_final.sort_values(by=['sort_key'], ascending=False)
         cache_data[str(rid)] = race_final.to_dict('records')
