@@ -577,14 +577,20 @@ if target_id:
         scored_df['final_score'] = final_scores
         scored_df = scored_df.sort_values(by='final_score', ascending=False, na_position='last').reset_index(drop=True)
         
-        # 近5走データのマージ
+        # 近5走データのマージ (重複回避版)
         if not df_future.empty:
             race_future = df_future[df_future['race_id'] == target_id].copy()
             race_future['馬名_clean'] = race_future['馬名'].apply(clean_name)
             scored_df['馬名_clean'] = scored_df['馬名'].apply(clean_name)
             
-            merge_cols = ['馬名_clean'] + [c for c in race_future.columns if '前走' in c or '公式脚質' in c or '人気' in c or 'オッズ' in c]
-            merge_cols = list(dict.fromkeys(merge_cols))
+            target_cols = [c for c in race_future.columns if '前走' in c or '公式脚質' in c or '人気' in c or 'オッズ' in c]
+            target_cols = list(dict.fromkeys(target_cols))
+            
+            # _x, _y の重複リネームを防ぐため、古いデータを一旦削除してから最新データを結合
+            drop_cols = [c for c in target_cols if c in scored_df.columns]
+            scored_df = scored_df.drop(columns=drop_cols, errors='ignore')
+            
+            merge_cols = ['馬名_clean'] + target_cols
             scored_df = pd.merge(scored_df, race_future[merge_cols], on='馬名_clean', how='left')
 
         race_display_name = f"{place_name_val} {info.get('r_num','?')}R ダート{dist_num_val}m (指定馬場: {track_condition})"
