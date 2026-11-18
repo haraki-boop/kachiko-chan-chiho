@@ -1,0 +1,11 @@
+﻿streamlit
+pandas
+numpy
+beautifulsoup4
+requests
+google-genai
+joblib
+scikit-learn
+lightgbm
+xgboost
+catboost

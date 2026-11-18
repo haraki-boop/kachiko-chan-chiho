@@ -1,0 +1,8 @@
+﻿ml_target_data*.csv
+nar_keiba_database.csv
+keiba_ai_model_*.pkl
+past_dicts.pkl
+prediction_history_chiho.csv
+catboost_info/
+__pycache__/
+*.pyc
